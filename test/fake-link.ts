@@ -1,5 +1,6 @@
 // In-memory Aseprite behind the Link interface: RGB sprites only, full-canvas cel bytes, one undo step per
 // applied commit, compare-and-swap per written cel. Enough for program.test.ts; the real Lua is in extension/.
+import { moveCanvas } from "../src/draft.ts";
 import type { Op, Tag } from "../src/draft.ts";
 import type { Link, LinkReply, LinkStatus } from "../src/link.ts";
 import type { Rect } from "../src/raster.ts";
@@ -178,6 +179,24 @@ const applyOp = (s: State, op: Op) => {
     }
     case "palette.append": {
       s.palette.push(...op.colors);
+      return;
+    }
+    case "canvas.resize": {
+      for (const [k, v] of s.cels.entries().toArray()) {
+        const moved = moveCanvas(
+          v,
+          [s.width, s.height],
+          [op.width, op.height],
+          [op.x, op.y]
+        );
+        if (moved.some((_, i) => i % 4 === 3 && moved[i] !== 0)) {
+          s.cels.set(k, moved);
+        } else {
+          s.cels.delete(k);
+        }
+      }
+      s.width = op.width;
+      s.height = op.height;
       return;
     }
     default: {
@@ -458,7 +477,7 @@ export const createFakeLink = (): FakeLink => {
     status: (): LinkStatus => ({
       connected: true,
       error: null,
-      extension: "0.1.0",
+      extension: "0.2.0",
       port: 9123,
     }),
   };

@@ -110,6 +110,7 @@ Set these environment variables for the daemon.
 | `ASEPRITE_MCP_TOKEN` | Token file |
 | `ASEPRITE_MCP_TOKEN_FILE` | `~/.config/aseprite-mcp/token` |
 | `ASEPRITE_MCP_PALETTE_FILE` | `~/.config/aseprite-mcp/palettes.json` |
+| `ASEPRITE_MCP_LIB_DIR` | `~/.config/aseprite-mcp/lib`, where `lib(name, code)` saves helper code |
 | `ASEPRITE_MCP_SPRITES_DIR` | `~/Pictures/aseprite-mcp`, where `s.save("name")` writes |
 | `ASEPRITE_MCP_FILE_DIRS` | The sprites folder and the temporary directories |
 | `ASEPRITE_MCP_VIEWS_DIR` | The user cache directory |
@@ -130,6 +131,8 @@ sprites(): Promise<{ id, name, width, height, frames, active }[]>
 image(path): Promise<Image>
 ramp(base: string, keys: string, o?: { hueShift?: number }): Record<string, string>
 palette(name, colors?): Promise<Record<string, string>>
+lib(name?, code?): Promise<string[] | string>
+use(name): void
 help(topic?): string
 ```
 
@@ -137,11 +140,12 @@ help(topic?): string
 - `ramp` makes OKLCH shades, dark to light, one per key.
 - `palette` loads a named palette, or saves it when you pass colors.
 - `image` loads a PNG as pixels. See [Sprite sheets, GIFs and reference images](#sprite-sheets-gifs-and-reference-images).
-- `help` has the topics `maps`, `animation`, `critique`, `conflicts`, `files` and `export`.
+- `lib` saves, reads or lists helper code. See [Saved helper code](#saved-helper-code).
+- `help` has the topics `maps`, `animation`, `critique`, `conflicts`, `files`, `export` and `lib`.
 
-A `Sprite` has `layers()`, `frames()`, `selection()`, `cel(layer, frame)`, `cels(layer)`, `layer(name, opts)`, `setFrames(count, opts)`, `tag(name, from, to, opts)`, `view(opts)`, `commit(label)`, `undo(n)`, `redo(n)`, `changes()`, `save(path)` and `export(name, opts)`.
+A `Sprite` has `layers()`, `frames()`, `selection()`, `cel(layer, frame)`, `cels(layer)`, `layer(name, opts)`, `setFrames(count, opts)`, `tag(name, from, to, opts)`, `view(opts)`, `resize(width, height, opts)`, `commit(label)`, `undo(n)`, `redo(n)`, `changes()`, `save(path)` and `export(name, opts)`.
 
-A `Cel` has `map`, `px`, `line`, `rect`, `ellipse`, `fill`, `outline`, `shift`, `copy`, `recolor`, `clear` and `read`. Drawing methods return the number of pixels changed.
+A `Cel` has `map`, `px`, `line`, `rect`, `ellipse`, `fill`, `outline`, `shift`, `copy`, `recolor`, `clear`, `read` and `bounds`. Drawing methods return the number of pixels changed. `bounds()` returns `[x, y, w, h]` of the non-transparent pixels, or `null` for an empty cel.
 
 Colors are `"#rgb"`, `"#rrggbb"` or `"#rrggbbaa"`. A pixel map uses a palette of one-character keys and one string per row:
 
@@ -161,7 +165,29 @@ Rules:
 - A throw or a timeout commits nothing. Call `await s.commit("label")` for a checkpoint that survives a later throw.
 - Do not loop over single pixels in JavaScript. Use `map`, `rect`, `fill` and `shift`.
 - Return only what you need, such as counts or a few rows.
-- `view()` writes a PNG and returns its path. With `critique: true`, the image shows color, grayscale values, silhouette and true size.
+- `view()` writes a PNG and returns its path. With `critique: true`, the image shows color, grayscale values, silhouette and true size. `background: "#080707"` draws that color instead of the checkerboard.
+- Pixels that a drawing call puts outside the canvas are dropped. The result's `warnings` list each such call once, for example `map on "body"@0 dropped 12 pixels outside the 48x48 canvas`.
+- `s.resize(64, 64, { x, y })` changes the canvas size, not the scale of the art. The art moves by `(x, y)`. By default it stays at the bottom center, so a figure on a baseline stays on it. `resize` returns a handle with the new `width` and `height`, and it commits in the same undo step as the other edits. It needs extension 0.2.0.
+
+### Saved helper code
+
+`lib(name, code)` saves JavaScript helpers to `~/.config/aseprite-mcp/lib/<name>.js`. A later program loads them with a top-level `use("name")` statement. Before the program runs, the daemon puts each used library in front of it, dependencies first, so the functions it declares are in scope.
+
+```js
+await lib(
+  "style",
+  'use("base")\nfunction blob(c, x, y) { c.rect([x, y, 4, 4], INK, { fill: true }) }'
+);
+// next program:
+use("style");
+const s = await sprite({ new: [48, 48] });
+blob(s.cel("Layer 1"), 10, 10);
+```
+
+- `lib(name)` returns the source and `lib()` lists the names. A name has 1 to 40 characters from `a-z`, `0-9`, `_` and `-`.
+- The daemon parses the code before it saves it. A syntax error names the line, and nothing is saved.
+- A library can `use` other libraries. A missing library or a cycle fails before the program runs.
+- An error inside a library names the library and its line. Lines in the program stay as you wrote them.
 
 ### Sprite sheets, GIFs and reference images
 

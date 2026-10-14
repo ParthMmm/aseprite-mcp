@@ -102,6 +102,31 @@ case("commit is one undo step and redo restores it", function()
   same(snap(id), after, "redo restores the commit")
 end)
 
+case("canvas.resize moves art by the offset in one undo step and trims what leaves the canvas", function()
+  local id = call("new_sprite", { width = 4, height = 3 }).spriteId
+  call("commit", {
+    sprite = id, label = "dots", ops = {}, writes = { { layer = "Layer 1", frame = 0, next = 0 } },
+  }, { rgbaCanvas(4, 3, { { 0, 0, RED }, { 3, 2, BLUE } }) })
+  local before = snap(id)
+  local moved = rgbaCanvas(6, 5, { { 2, 1, RED }, { 5, 3, BLUE } })
+  local next = rgbaCanvas(6, 5, { { 0, 0, BLUE }, { 2, 1, RED }, { 5, 3, BLUE } })
+  local r = call("commit", {
+    sprite = id, label = "grow", ops = { { op = "canvas.resize", width = 6, height = 5, x = 2, y = 1 } },
+    writes = { { layer = "Layer 1", frame = 0, base = 0, next = 1 } },
+  }, { moved, next })
+  check(r.applied, "applied: CAS compares against the moved canvas")
+  local after = snap(id)
+  check(after.result.sprite.width == 6 and after.result.sprite.height == 5, "canvas is 6x5")
+  check(celBytes(after, "Layer 1", 0) == next, "art moved by (2, 1) plus the new pixel")
+  call("history", { action = "undo", steps = 1 })
+  same(snap(id), before, "one undo restores size and art")
+  call("commit", {
+    sprite = id, label = "shrink then grow", writes = {},
+    ops = { { op = "canvas.resize", width = 2, height = 2, x = 0, y = 0 }, { op = "canvas.resize", width = 4, height = 3, x = 0, y = 0 } },
+  })
+  check(celBytes(snap(id), "Layer 1", 0) == rgbaCanvas(4, 3, { { 0, 0, RED } }), "pixels cut by the shrink stay gone")
+end)
+
 case("CAS conflict changes nothing and returns the current bytes", function()
   local id = call("new_sprite", { width = 2, height = 2 }).spriteId
   local base = celBytes(snap(id), "Layer 1", 0)

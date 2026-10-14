@@ -59,11 +59,21 @@ export interface SpriteInfo {
   selection: Rect | null;
 }
 
+/** A canvas size change: art moves by (x, y); pixels that land outside are dropped. */
+export interface Resize {
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+}
+
 export interface Draft {
   sprite: SpriteInfo;
   baseStructure: Structure;
   structure: Structure;
   cels: Map<CelKey, CelBuf>;
+  /** Canvas size changes since the last commit, in order; cel buffers already have the latest size. */
+  resizes: Resize[];
   seq: number;
 }
 
@@ -92,6 +102,7 @@ type LayerProps = Partial<Pick<Layer, "visible" | "opacity">>;
 /** One structural change for plugin.lua, applied in list order. */
 export type Op =
   | { op: "palette.append"; colors: string[] }
+  | ({ op: "canvas.resize" } & Resize)
   | { op: "layer.remove"; path: string }
   | ({ op: "layer.set"; path: string; rename?: string } & LayerProps)
   | { op: "layer.add"; path: string; below?: string }
@@ -176,6 +187,7 @@ export const fromSnapshot = (
   return {
     baseStructure: clone(structure),
     cels,
+    resizes: [],
     seq: 0,
     sprite: { ...s, palette: [...reply.palette], selection: reply.selection },
     structure,
@@ -443,6 +455,70 @@ const diffCount = (a: Uint8Array | null, b: Uint8Array | null): number => {
   return n;
 };
 const isEmpty = (a: Uint8Array): boolean => diffCount(a, null) === 0;
+const opaque = (a: Uint8Array | null): number => (a ? diffCount(a, null) : 0);
+
+/** A full-canvas buffer of `bpp` bytes per pixel copied into a w2 x h2 canvas at (dx, dy); the rest is `fill`. */
+export const moveCanvas = (
+  src: Uint8Array,
+  [w, h]: [number, number],
+  [w2, h2]: [number, number],
+  [dx, dy]: [number, number],
+  fill = 0
+): Uint8Array => {
+  const bpp = src.length / (w * h);
+  const out = new Uint8Array(w2 * h2 * bpp).fill(fill);
+  const x0 = Math.max(0, dx);
+  const x1 = Math.min(w2, w + dx);
+  if (x1 <= x0) {
+    return out;
+  }
+  for (let y = Math.max(0, dy); y < Math.min(h2, h + dy); y += 1) {
+    const from = ((y - dy) * w + x0 - dx) * bpp;
+    out.set(src.subarray(from, from + (x1 - x0) * bpp), (y * w2 + x0) * bpp);
+  }
+  return out;
+};
+
+export interface ResizeResult {
+  /** Opaque pixels each cel lost outside the new canvas. */
+  dropped: [CelKey, number][];
+  /** Each snapshot buffer and the moved buffer that replaced it. */
+  bases: [Uint8Array, Uint8Array][];
+}
+
+/** Change the canvas size: every cel moves by (x, y) and is clipped to the new size. */
+export const resize = (d: Draft, r: Resize): ResizeResult => {
+  const size: [number, number] = [d.sprite.width, d.sprite.height];
+  const move = (a: Uint8Array): Uint8Array =>
+    moveCanvas(a, size, [r.width, r.height], [r.x, r.y]);
+  const out: ResizeResult = { bases: [], dropped: [] };
+  const seen = new Set<CelBuf>();
+  for (const [key, buf] of d.cels) {
+    if (seen.has(buf)) {
+      continue;
+    }
+    seen.add(buf);
+    const before = opaque(buf.cur ?? buf.base);
+    if (buf.base) {
+      const next = move(buf.base);
+      out.bases.push([buf.base, next]);
+      buf.base = next;
+    }
+    if (buf.cur) {
+      buf.cur = move(buf.cur);
+    }
+    const lost = before - opaque(buf.cur ?? buf.base);
+    if (lost) {
+      out.dropped.push([key, lost]);
+    }
+  }
+  const sel = d.sprite.selection;
+  d.sprite.selection = sel && [sel[0] + r.x, sel[1] + r.y, sel[2], sel[3]];
+  d.sprite.width = r.width;
+  d.sprite.height = r.height;
+  d.resizes.push({ ...r });
+  return out;
+};
 
 const changedProps = (l: Layer, b: Layer | null | undefined): LayerProps => ({
   ...(l.visible !== (b?.visible ?? true) && { visible: l.visible }),
@@ -577,7 +653,11 @@ const missingColors = (d: Draft, writes: CelWrite[]): Set<string> => {
  */
 export const plan = (d: Draft): Plan => {
   const { baseStructure: was, structure: now } = d;
-  const ops = [...layerOps(was, now), ...timelineOps(was, now)];
+  const ops: Op[] = [
+    ...d.resizes.map((r): Op => ({ op: "canvas.resize", ...r })),
+    ...layerOps(was, now),
+    ...timelineOps(was, now),
+  ];
   const { writes, pixels } = celWrites(d);
   let { palette } = d.sprite;
   const missing =
@@ -669,5 +749,9 @@ export const rebase = (d: Draft, applied: Plan): void => {
     delete l.seq;
   }
   d.baseStructure = clone(d.structure);
+  d.resizes.splice(
+    0,
+    applied.ops.filter((o) => o.op === "canvas.resize").length
+  );
   d.sprite.palette = [...applied.palette];
 };

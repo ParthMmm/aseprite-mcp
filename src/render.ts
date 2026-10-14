@@ -21,6 +21,8 @@ export interface Layer {
 }
 export type CritiquePanel = "color" | "gray" | "silhouette" | "deutan" | "1x";
 type Rgb = [number, number, number];
+/** A view's background colour, drawn instead of the checkerboard. */
+type Backdrop = readonly [r: number, g: number, b: number];
 
 const PNG_SIGNATURE = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -133,13 +135,17 @@ const guardSize = (W: number, H: number, scale: number): void => {
   }
 };
 
-/** Upscaled view; transparency shows a grey checkerboard. Without `scale` the longer side lands near 512 px. */
+/**
+ * Upscaled view; transparency shows a grey checkerboard, or `background` when given. Without `scale` the longer
+ * side lands near 512 px.
+ */
 export const renderView = (
   cv: Canvas,
   {
     scale = defaultScale(cv.width, cv.height, 512),
     checker = true,
-  }: { scale?: number; checker?: boolean } = {}
+    background,
+  }: { scale?: number; checker?: boolean; background?: Backdrop } = {}
 ): Rendered => {
   const W = cv.width * scale;
   const H = cv.height * scale;
@@ -156,9 +162,10 @@ export const renderView = (
         out.set(cv.data.subarray(s, s + 4), o);
         continue;
       }
-      const bg = checkerShade(x, y, cell);
+      const shade = checkerShade(x, y, cell);
+      const bg = background ?? [shade, shade, shade];
       for (let c = 0; c < 3; c += 1) {
-        out[o + c] = Math.round((cv.data[s + c] * a + bg * (255 - a)) / 255);
+        out[o + c] = Math.round((cv.data[s + c] * a + bg[c] * (255 - a)) / 255);
       }
       out[o + 3] = 255;
     }
@@ -221,7 +228,8 @@ export const critiqueSheet = (
   {
     panels = ["color", "gray", "silhouette", "1x"],
     scale = defaultScale(cv.width, cv.height, 200),
-  }: { panels?: CritiquePanel[]; scale?: number } = {}
+    background,
+  }: { panels?: CritiquePanel[]; scale?: number; background?: Backdrop } = {}
 ): Rendered => {
   for (const p of panels) {
     if (!CRITIQUE_PANELS.includes(p)) {
@@ -247,23 +255,25 @@ export const critiqueSheet = (
   for (const [n, kind] of panels.entries()) {
     const s = scales[n];
     const cell = Math.max(2, s >> 1);
+    const ground = background && shadePanel(kind, ...background);
     for (let y = 0; y < h * s; y += 1) {
       for (let x = 0; x < w * s; x += 1) {
         const i = (Math.trunc(y / s) * w + Math.trunc(x / s)) * 4;
         const a = data[i + 3];
         let rgb: number[];
         let cover = a / 255;
-        let bg = checkerShade(x, y, cell);
+        const shade = checkerShade(x, y, cell);
+        let bg = ground ?? [shade, shade, shade];
         if (kind === "silhouette") {
           rgb = [0, 0, 0];
           cover = a >= 128 ? 1 : 0;
-          bg = 255;
+          bg = [255, 255, 255];
         } else {
           rgb = shadePanel(kind, data[i], data[i + 1], data[i + 2]);
         }
         const o = ((SHEET_GAP + y) * W + left + x) * 4;
         for (let c = 0; c < 3; c += 1) {
-          out[o + c] = Math.round(rgb[c] * cover + bg * (1 - cover));
+          out[o + c] = Math.round(rgb[c] * cover + bg[c] * (1 - cover));
         }
         out[o + 3] = 255;
       }

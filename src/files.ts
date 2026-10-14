@@ -27,6 +27,7 @@ export const TOKEN_FILE =
   env.ASEPRITE_MCP_TOKEN_FILE ?? path.join(CONFIG_DIR, "token");
 export const PALETTE_FILE =
   env.ASEPRITE_MCP_PALETTE_FILE ?? path.join(CONFIG_DIR, "palettes.json");
+export const LIB_DIR = env.ASEPRITE_MCP_LIB_DIR ?? path.join(CONFIG_DIR, "lib");
 
 export const SPRITES_DIR =
   env.ASEPRITE_MCP_SPRITES_DIR ??

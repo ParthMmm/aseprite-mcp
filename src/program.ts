@@ -1,5 +1,5 @@
 // The code-mode runtime: one execute() runs one agent program against per-sprite Drafts, then commits what is
-// left as one undo step per sprite. Globals: sprite, sprites, image, ramp, palette, help. Handles are plain objects of
+// left as one undo step per sprite. Globals: sprite, sprites, image, ramp, palette, lib, use, help. Handles are plain objects of
 // closures; mutable state is behind methods because codemode copies plain fields once at the boundary.
 import {
   mkdir,
@@ -16,11 +16,14 @@ import nodePath from "node:path";
 import { CodeMode, Extension } from "@opencode/codemode";
 import { Effect } from "effect";
 
-import { ramp, loadPalette, savePalette } from "./color.ts";
+import { ramp, loadPalette, parseHex, savePalette } from "./color.ts";
 import * as D from "./draft.ts";
 import type { CelKey, Draft } from "./draft.ts";
 import { insideAllowedDir } from "./files.ts";
 import { help } from "./help.ts";
+import { listLibs, mapError, prepare, readLib, saveLib } from "./library.ts";
+import type { MappedError, Prepared } from "./library.ts";
+import { compareVersions } from "./link.ts";
 import type { Link } from "./link.ts";
 import * as R from "./raster.ts";
 import {
@@ -54,6 +57,8 @@ export interface RuntimeOptions {
   palettesFile: string;
   /** Where bare names such as "slime" are saved and opened; null disables bare names. */
   spritesDir?: string | null;
+  /** Where lib() saves helper code; null turns lib() and use() off. */
+  libDir?: string | null;
   allowedDirs?: string[];
   limits?: Partial<Limits>;
 }
@@ -136,6 +141,7 @@ export interface CelHandle {
     o?: WithRect<R.OutlineOptions>
   ) => number;
   px: (points: R.Point[]) => number;
+  bounds: () => R.Rect | null;
   read: (o?: WithRect<R.ReadOptions>) => R.PixelRows;
   recolor: (
     mapping: Record<string, string>,
@@ -150,6 +156,7 @@ export interface ViewOptions {
   rect?: RectArg;
   scale?: number;
   critique?: boolean;
+  background?: string;
 }
 
 export interface ViewResult {
@@ -180,6 +187,11 @@ export interface SpriteHandle {
   layer: (name: string, o?: D.LayerOptions) => void;
   layers: () => string[];
   redo: (n?: number) => Promise<void>;
+  resize: (
+    width: number,
+    height: number,
+    o?: { x?: number; y?: number }
+  ) => SpriteHandle;
   save: (path?: unknown) => Promise<unknown>;
   selection: () => R.Rect | null;
   setFrames: (count: number, o?: { duration?: unknown }) => void;
@@ -205,6 +217,10 @@ interface Run {
   loaded: R.Canvas[];
   images: string[];
   commits: CommitInfo[];
+  /** "map on \"body\"@0" -> opaque pixels dropped outside the canvas and the canvas size then. */
+  clips: Map<string, { pixels: number; size: string }>;
+  /** Libraries prepended to this run's program. */
+  libraries: Set<string>;
 }
 
 export interface SpriteOptions {
@@ -229,11 +245,13 @@ interface EnvelopeBase {
 export interface ExecuteSuccess extends EnvelopeBase {
   ok: true;
   value: unknown;
-  warnings?: readonly CodeMode.Diagnostic[];
+  /** Codemode diagnostics, then one line per drawing call that dropped pixels outside the canvas. */
+  warnings?: readonly (CodeMode.Diagnostic | string)[];
 }
 export interface ExecuteFailure extends EnvelopeBase {
   ok: false;
-  error: { kind: string; message: string; line?: number };
+  /** line is in the program, or in `library` when the error is inside a used library. */
+  error: MappedError;
   discarded?: Discarded[];
 }
 /** What execute() hands back to the agent; it never rejects. */
@@ -254,6 +272,7 @@ export const DEFAULT_LIMITS: Limits = {
   timeoutMs: 60_000,
 };
 const MAX_RETRIES = 3;
+const RESIZE_EXTENSION = "0.2.0";
 const KEEP_VIEWS = 200;
 // Lua prefixes "MCP: ".
 const AUTO_LABEL = "program";
@@ -288,6 +307,14 @@ const messageOf = (e: unknown): string =>
   );
 
 const mb = (n: number): number => Math.ceil(n / (1024 * 1024));
+
+const noteClip = (run: Run, call: string, pixels: number, d: Draft): void => {
+  const seen = run.clips.get(call);
+  run.clips.set(call, {
+    pixels: (seen?.pixels ?? 0) + pixels,
+    size: `${d.sprite.width}x${d.sprite.height}`,
+  });
+};
 
 /** cel key -> base bytes: what Aseprite holds according to this draft. */
 const baseMap = (d: Draft): Map<CelKey, Uint8Array> => {
@@ -420,17 +447,33 @@ const celHandle = (
   });
   const cv = () => canvas(D.writable(st.d, layer, frame));
   const ro = () => canvas(D.readable(st.d, layer, frame));
+  const draw = (method: string, fn: (c: R.Canvas) => number): number => {
+    const c = cv();
+    const n = fn(c);
+    if (c.clipped) {
+      noteClip(
+        run,
+        `${method} on ${JSON.stringify(layer)}@${frame}`,
+        c.clipped,
+        st.d
+      );
+    }
+    return n;
+  };
   return {
+    bounds: () =>
+      diffRect(null, ro().data, st.d.sprite.width, st.d.sprite.height),
     clear: (r) => R.clear(cv(), r === undefined ? undefined : rectOf(st.d, r)),
     copy: (from, o) => {
       if (from?.image !== undefined) {
         const picture = run.loaded[from.image];
-        if (!picture || o?.rect === "selection") {
+        const rect = o?.rect;
+        if (!picture || rect === "selection") {
           throw new Error(
             "copy: pass { image: img.image } for an image from image(path); rect is [x, y, w, h] in the image."
           );
         }
-        return R.copy(cv(), picture, { ...o, rect: o?.rect });
+        return draw("copy", (c) => R.copy(c, picture, { ...o, rect }));
       }
       const src = from?.sprite === undefined ? st : run.states.get(from.sprite);
       if (!src || typeof from?.layer !== "string") {
@@ -438,35 +481,41 @@ const celHandle = (
           "copy: pass { layer, frame } (add sprite: id for another sprite) or { image: img.image }."
         );
       }
-      const dst = cv();
       const data = D.readable(src.d, from.layer, from.frame ?? 0);
-      return R.copy(
-        dst,
-        { data, height: src.d.sprite.height, width: src.d.sprite.width },
-        { ...o, rect: rectIn(src.d, o) }
+      return draw("copy", (c) =>
+        R.copy(
+          c,
+          { data, height: src.d.sprite.height, width: src.d.sprite.width },
+          { ...o, rect: rectIn(src.d, o) }
+        )
       );
     },
-    ellipse: (r, color, o) => R.ellipse(cv(), rectOf(st.d, r), color, o),
+    ellipse: (r, color, o) =>
+      draw("ellipse", (c) => R.ellipse(c, rectOf(st.d, r), color, o)),
     fill: (x, y, color) => R.fill(cv(), x, y, color),
     frame,
     layer,
-    line: (x0, y0, x1, y1, color) => R.line(cv(), x0, y0, x1, y1, color),
+    line: (x0, y0, x1, y1, color) =>
+      draw("line", (c) => R.line(c, x0, y0, x1, y1, color)),
     map: (palette, rows, o) => {
       checkMap(palette, rows);
-      return R.map(cv(), palette, rows, o);
+      return draw("map", (c) => R.map(c, palette, rows, o));
     },
     outline: (color, o) => {
-      const [c, opts] =
+      const [col, opts] =
         color && typeof color === "object" ? [undefined, color] : [color, o];
-      return R.outline(cv(), c, { ...opts, rect: rectIn(st.d, opts) });
+      return draw("outline", (c) =>
+        R.outline(c, col, { ...opts, rect: rectIn(st.d, opts) })
+      );
     },
-    px: (points) => R.px(cv(), points),
+    px: (points) => draw("px", (c) => R.px(c, points)),
     read: (o) => R.read(ro(), { ...o, rect: rectIn(st.d, o) }),
     recolor: (mapping, o) =>
       R.recolor(cv(), mapping, { ...o, rect: rectIn(st.d, o) }),
-    rect: (r, color, o) => R.rect(cv(), rectOf(st.d, r), color, o),
+    rect: (r, color, o) =>
+      draw("rect", (c) => R.rect(c, rectOf(st.d, r), color, o)),
     shift: (dx, dy, o) =>
-      R.shift(cv(), dx, dy, { ...o, rect: rectIn(st.d, o) }),
+      draw("shift", (c) => R.shift(c, dx, dy, { ...o, rect: rectIn(st.d, o) })),
     sprite: st.d.sprite.id,
   };
 };
@@ -530,6 +579,7 @@ export const createRuntime = ({
   viewsDir,
   palettesFile,
   spritesDir = null,
+  libDir = null,
   allowedDirs = [],
   limits = {},
 }: RuntimeOptions): { execute: (code: string) => Promise<ExecuteResult> } => {
@@ -728,9 +778,11 @@ export const createRuntime = ({
       r ? R.crop(flatten(d, f), r) : flatten(d, f)
     );
     const cv = pics.length === 1 ? pics[0] : frameStrip(pics);
+    const rgb = o.background === undefined ? undefined : parseHex(o.background);
+    const background = rgb && ([rgb[0], rgb[1], rgb[2]] as const);
     const out = o.critique
-      ? critiqueSheet(cv, { scale: o.scale })
-      : renderView(cv, { scale: o.scale });
+      ? critiqueSheet(cv, { background, scale: o.scale })
+      : renderView(cv, { background, scale: o.scale });
     await mkdir(viewsDir, { recursive: true });
     const safe = d.sprite.name.replaceAll(/[^\w.-]+/gu, "_").slice(0, 40);
     viewSeq += 1;
@@ -874,6 +926,59 @@ export const createRuntime = ({
     return out.toSorted(byLayerThenFrame);
   };
 
+  /** Moves every cel and keeps the exact Aseprite bytes of each moved base, so the commit's CAS still matches. */
+  const resize = (
+    run: Run,
+    st: SpriteState,
+    width: number,
+    height: number,
+    o: { x?: number; y?: number }
+  ): void => {
+    const { extension } = link.status();
+    if (compareVersions(extension, RESIZE_EXTENSION) < 0) {
+      throw new Error(
+        `resize: the connected Aseprite extension is ${extension ?? "unknown"}; update the Aseprite extension to ${RESIZE_EXTENSION}.`
+      );
+    }
+    const { d } = st;
+    const { width: w, height: h, colorMode, transparentIndex } = d.sprite;
+    const x = o.x ?? Math.floor((width - w) / 2);
+    const y = o.y ?? height - h;
+    if (
+      ![width, height].every((v) => Number.isInteger(v) && v >= 1 && v <= 4096)
+    ) {
+      throw new Error(
+        `resize(width, height): whole numbers 1-4096, got ${width}, ${height}.`
+      );
+    }
+    if (!Number.isInteger(x) || !Number.isInteger(y)) {
+      throw new TypeError(
+        `resize: x and y must be whole numbers, got ${x}, ${y}.`
+      );
+    }
+    const bytes = d.cels.size * width * height * 4;
+    if (bytes > lim.draftBytes) {
+      throw new Error(
+        `resize(${width}, ${height}): ${d.cels.size} cels at that size are ${mb(bytes)} MB of pixels; the limit is ${mb(lim.draftBytes)} MB.`
+      );
+    }
+    const { bases, dropped } = D.resize(d, { height, width, x, y });
+    const fill = colorMode === "indexed" ? transparentIndex : 0;
+    for (const [old, next] of bases) {
+      const raw = rawBytes.get(old);
+      if (raw) {
+        rawBytes.set(
+          next,
+          D.moveCanvas(raw, [w, h], [width, height], [x, y], fill)
+        );
+      }
+    }
+    for (const [key, pixels] of dropped) {
+      const { layer, frame } = D.parseKey(key);
+      noteClip(run, `resize on ${JSON.stringify(layer)}@${frame}`, pixels, d);
+    }
+  };
+
   const spriteHandle = (run: Run, st: SpriteState): SpriteHandle => {
     const { id, name, width, height, colorMode } = st.d.sprite;
     return {
@@ -906,6 +1011,12 @@ export const createRuntime = ({
       layers: () => st.d.structure.layers.map((l) => l.path),
       name,
       redo: (n) => history(st, "redo", n),
+      resize: (w, h, o) => {
+        resize(run, st, w, h, o ?? {});
+        // Handles copy width and height once, so the new size needs a new handle.
+        st.handle = spriteHandle(run, st);
+        return st.handle;
+      },
       save: async (path) => {
         const abs = path === undefined ? undefined : await allowedPath(path);
         await commitDraft(run, st, AUTO_LABEL);
@@ -960,6 +1071,13 @@ export const createRuntime = ({
     return o.id ?? o.name;
   };
 
+  const libs = (): string => {
+    if (libDir === null) {
+      throw new Error("lib: saved libraries are turned off in this daemon.");
+    }
+    return libDir;
+  };
+
   const globals = (run: Run) => ({
     help: (topic?: unknown) => help(topic),
     async image(path: unknown): Promise<ImageHandle> {
@@ -971,6 +1089,14 @@ export const createRuntime = ({
           cause: error,
         });
       }
+    },
+    lib(name?: unknown, code?: unknown): Promise<unknown> {
+      if (name === undefined) {
+        return listLibs(libs());
+      }
+      return code === undefined
+        ? readLib(libs(), name)
+        : saveLib(libs(), name, code);
     },
     palette: (name: string, colors?: Record<string, string>) =>
       colors === undefined
@@ -1007,6 +1133,13 @@ export const createRuntime = ({
         width,
       }));
     },
+    use(name?: unknown): void {
+      if (typeof name !== "string" || !run.libraries.has(name)) {
+        throw new Error(
+          `use(${JSON.stringify(name)}): write use("name") as its own top-level statement with a string literal; a library saved by this program is usable from the next one.`
+        );
+      }
+    },
   });
 
   const pruneViews = async (): Promise<void> => {
@@ -1037,12 +1170,26 @@ export const createRuntime = ({
   const execute = async (code: string): Promise<ExecuteResult> => {
     const t0 = Date.now();
     const run: Run = {
+      clips: new Map(),
       commits: [],
       images: [],
+      libraries: new Set(),
       loaded: [],
       states: new Map(),
     };
     const done = <E extends object>(e: E) => ({ ...e, ms: Date.now() - t0 });
+    let prepared: Prepared;
+    try {
+      prepared = await prepare(libDir, code);
+    } catch (error) {
+      return done({
+        commit: [],
+        error: { kind: "LibraryError", message: messageOf(error) },
+        images: [],
+        ok: false as const,
+      });
+    }
+    run.libraries = new Set(prepared.libraries);
     let r: CodeMode.Result;
     try {
       const runtime = CodeMode.make({
@@ -1056,7 +1203,7 @@ export const createRuntime = ({
         },
         tools: {},
       });
-      r = await Effect.runPromise(runtime.execute(code));
+      r = await Effect.runPromise(runtime.execute(prepared.code));
     } catch (error) {
       r = {
         error: { kind: "ExecutionFailure", message: messageOf(error) },
@@ -1077,15 +1224,9 @@ export const createRuntime = ({
         : {};
     };
     if (!r.ok) {
-      const { kind, message, location } = r.error;
-      const diagnostic = {
-        kind,
-        message,
-        ...(location && { line: location.line }),
-      };
       return done({
         commit: run.commits,
-        error: diagnostic,
+        error: mapError(prepared, r.error),
         ok: false as const,
         ...discarded(),
         images: run.images,
@@ -1104,7 +1245,12 @@ export const createRuntime = ({
         ...logs,
       });
     }
-    const warnings = r.warnings?.length ? { warnings: r.warnings } : {};
+    const clipped = [...run.clips].map(
+      ([call, { pixels, size }]) =>
+        `${call} dropped ${pixels} pixel${pixels === 1 ? "" : "s"} outside the ${size} canvas`
+    );
+    const all = [...(r.warnings ?? []), ...clipped];
+    const warnings = all.length ? { warnings: all } : {};
     return done({
       commit: run.commits,
       images: run.images,

@@ -1,6 +1,6 @@
 -- The commands the daemon sends. Pixels cross only as Image.bytes strings: full-canvas, in the sprite's mode.
 
-local M = { VERSION = "0.1.0" }
+local M = { VERSION = "0.2.0" }
 
 local STRUCTURE = "\0structure:"
 
@@ -323,6 +323,34 @@ ops["palette.append"] = function(sprite, op)
   for i, hex in ipairs(colors) do target:setColor(start + i - 1, parseColor(hex)) end
 end
 
+-- crop keeps pixels outside the new canvas, so cels are trimmed to it: the daemon's draft drops them.
+ops["canvas.resize"] = function(sprite, op)
+  for _, k in ipairs({ "width", "height", "x", "y" }) do
+    if type(op[k]) ~= "number" then structure("canvas.resize needs a number " .. k) end
+  end
+  local w, h = math.floor(op.width), math.floor(op.height)
+  if w < 1 or h < 1 then structure("canvas size must be at least 1x1") end
+  sprite:crop(-math.floor(op.x), -math.floor(op.y), w, h)
+  local cels = {}
+  for _, cel in ipairs(sprite.cels) do
+    if not cel.layer.isTilemap then cels[#cels + 1] = cel end
+  end
+  for _, cel in ipairs(cels) do
+    local b = cel.bounds
+    local keep = b:intersect(Rectangle(0, 0, w, h))
+    if keep.isEmpty then
+      sprite:deleteCel(cel)
+    elseif keep.x ~= b.x or keep.y ~= b.y or keep.width ~= b.width or keep.height ~= b.height then
+      local spec = cel.image.spec
+      spec.width, spec.height = keep.width, keep.height
+      local trimmed = Image(spec)
+      trimmed:drawImage(cel.image, Point(b.x - keep.x, b.y - keep.y), 255, BlendMode.SRC)
+      cel.image = trimmed
+      cel.position = Point(keep.x, keep.y)
+    end
+  end
+end
+
 local function blobAt(blobs, index, size)
   if index == nil then return nil end
   local blob = blobs[index + 1] or fail("Blob " .. tostring(index) .. " is missing from the frame.")
@@ -347,7 +375,6 @@ end
 
 function handlers.commit(args, blobs)
   local sprite = resolve(args.sprite)
-  local blank = blankBytes(sprite)
   local writes = args.writes or {}
   local conflict
 
@@ -356,6 +383,8 @@ function handlers.commit(args, blobs)
       local apply = ops[op.op] or structure("unknown op '" .. tostring(op.op) .. "'")
       apply(sprite, op)
     end
+    -- After the ops, so a canvas.resize sets the size the blobs must have.
+    local blank = blankBytes(sprite)
 
     local targets = {}
     for i, w in ipairs(writes) do

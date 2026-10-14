@@ -17,6 +17,7 @@ import {
 import {
   AUTOSAVE_DIR,
   FILE_DIRS,
+  LIB_DIR,
   PALETTE_FILE,
   SPRITES_DIR,
   VIEWS_DIR,
@@ -43,6 +44,7 @@ export interface Envelope {
 
 export interface RuntimeOptions {
   allowedDirs: string[];
+  libDir: string | null;
   limits: object;
   link: Link;
   palettesFile: string;
@@ -239,6 +241,7 @@ export const startDaemon = async ({
     await mkdir(VIEWS_DIR, { recursive: true });
     const runtime = program.createRuntime({
       allowedDirs: FILE_DIRS,
+      libDir: LIB_DIR,
       limits: {},
       link,
       palettesFile: PALETTE_FILE,

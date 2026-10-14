@@ -15,6 +15,8 @@ export interface Canvas {
   width: number;
   height: number;
   data: Uint8Array;
+  /** Opaque pixels that drawing calls tried to put outside the canvas. */
+  clipped?: number;
 }
 export type Rect = [x: number, y: number, w: number, h: number];
 /** A rect clipped to the canvas: [x0, y0, x1, y1), possibly empty. */
@@ -78,6 +80,9 @@ const rgba = (c: unknown): Rgba => {
 
 const put = (cv: Canvas, x: number, y: number, [r, g, b, a]: Rgba): 0 | 1 => {
   if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) {
+    if (a !== 0) {
+      cv.clipped = (cv.clipped ?? 0) + 1;
+    }
     return 0;
   }
   const d = cv.data;
@@ -489,6 +494,24 @@ export const outline = (
   for (const [x, y, c] of planned) {
     n += put(cv, x, y, c);
   }
+  if (mode !== "inside") {
+    // Solid pixels on the canvas edge want an outline pixel just outside it.
+    const inRect = (x: number, y: number): boolean =>
+      !r || (x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]);
+    const edge: [solidX: number, solidY: number, x: number, y: number][] = [];
+    for (let x = 0; x < w; x += 1) {
+      edge.push([x, 0, x, -1], [x, h - 1, x, h]);
+    }
+    for (let y = 0; y < h; y += 1) {
+      edge.push([0, y, -1, y], [w - 1, y, w, y]);
+    }
+    const lost = edge.filter(
+      ([sx, sy, x, y]) => isSolid(sx, sy) && inRect(x, y)
+    ).length;
+    if (lost) {
+      cv.clipped = (cv.clipped ?? 0) + lost;
+    }
+  }
   return n;
 };
 
@@ -562,6 +585,7 @@ export const shift = (
   const next = { ...cv, data: new Uint8Array(cv.data) };
   clearRaw(next, [x0, y0, x1, y1]);
   copyRaw(next, moved, x0 + dx, y0 + dy);
+  cv.clipped = next.clipped;
   let n = 0;
   for (let i = 0; i < cv.data.length; i += 4) {
     if (keyAt(cv.data, i) !== keyAt(next.data, i)) {

@@ -1,7 +1,7 @@
 {
   "name": "aseprite-mcp",
   "displayName": "Aseprite MCP",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Connects Aseprite to the aseprite-mcp daemon so an AI assistant can draw in your open sprites.",
   "categories": [
     "Scripts"
