@@ -42,7 +42,9 @@ const opaque = (bytes: Uint8Array | undefined) => {
   assert.ok(bytes, "cel exists");
   let n = 0;
   for (let i = 3; i < bytes.length; i += 4) {
-    if (bytes[i]) {n += 1;}
+    if (bytes[i]) {
+      n += 1;
+    }
   }
   return n;
 };
@@ -159,7 +161,11 @@ test("read -> recolor -> map round trip", async () => {
     "",
   ]);
   assert.equal((bOk.value as { changed: number }).changed, 5);
-  assert.deepEqual((bOk.value as { green: string[] }).green.slice(1, 4), [".gga", "..ag", ".g.g"]);
+  assert.deepEqual((bOk.value as { green: string[] }).green.slice(1, 4), [
+    ".gga",
+    "..ag",
+    ".g.g",
+  ]);
   assert.deepEqual(
     b.commit,
     [],
@@ -244,7 +250,10 @@ test("program errors name what exists", async () => {
   const { run } = await setup();
   const layer = await run(`(await sprite({ new: [4, 4] })).cel("Body")`);
   const layerBad = fail(layer);
-  assert.match(layerBad.error.message, /Unknown layer 'Body'\. Layers: Layer 1\./);
+  assert.match(
+    layerBad.error.message,
+    /Unknown layer 'Body'\. Layers: Layer 1\./
+  );
 
   const key = await run(
     `(await sprite()).cel("Layer 1").map({ a: "#fff" }, ["aa", "aX"])`

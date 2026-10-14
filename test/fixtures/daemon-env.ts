@@ -42,7 +42,9 @@ export async function isolatedEnv() {
   return {
     base,
     async cleanup() {
-      await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => { /* empty */ });
+      await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {
+        /* empty */
+      });
       rmSync(dir, { force: true, recursive: true });
     },
     dir,

@@ -7,12 +7,15 @@ import { fileURLToPath } from "node:url";
 import { MIN_EXTENSION } from "../src/link.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const json = (path: string) => JSON.parse(readFileSync(join(root, path), "utf-8"));
+const json = (path: string) =>
+  JSON.parse(readFileSync(join(root, path), "utf-8"));
 const parts = (v: string) => v.split(".").map(Number);
 const atLeast = (a: string, b: string) => {
   const [x, y] = [parts(a), parts(b)];
   for (let i = 0; i < 3; i += 1) {
-    if (x[i] !== y[i]) {return x[i] > y[i];}
+    if (x[i] !== y[i]) {
+      return x[i] > y[i];
+    }
   }
   return true;
 };

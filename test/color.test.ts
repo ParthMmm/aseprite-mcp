@@ -39,7 +39,8 @@ test("ramp keeps the base in the middle and runs dark to light", () => {
   assert.deepEqual(Object.keys(p), ["a", "b", "c", "d", "e"]);
   assert.equal(p.c, "#b13e53");
   const L = Object.values(p).map(
-    (c) => rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[0]
+    (c) =>
+      rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[0]
   );
   for (let i = 1; i < L.length; i += 1) {
     assert.ok(L[i] > L[i - 1], `L rises at ${i}: ${L}`);

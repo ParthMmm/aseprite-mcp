@@ -77,10 +77,14 @@ test("the proxy reuses a running daemon instead of starting another", async (t) 
     arguments: { code: "1" },
     name: "execute",
   });
-  assert.deepEqual(JSON.parse((res as { content: { text: string }[] }).content[0]?.text ?? "").value, {
-    code: "1",
-    connected: false,
-  });
+  assert.deepEqual(
+    JSON.parse((res as { content: { text: string }[] }).content[0]?.text ?? "")
+      .value,
+    {
+      code: "1",
+      connected: false,
+    }
+  );
   assert.equal((await waitForHealth(ctx.base)).pid, daemon.child.pid);
   await client.close();
 });
@@ -89,7 +93,10 @@ test("status and stop talk to the daemon", async (t) => {
   const ctx = await isolatedEnv();
   t.after(() => ctx.cleanup());
   const run = (cmd: string) =>
-    spawnSync(process.execPath, [BIN, cmd], { encoding: "utf-8", env: ctx.env });
+    spawnSync(process.execPath, [BIN, cmd], {
+      encoding: "utf-8",
+      env: ctx.env,
+    });
 
   assert.equal(run("status").status, 1, "status fails without a daemon");
   const daemon = serve(ctx.env);

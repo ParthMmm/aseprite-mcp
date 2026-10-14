@@ -58,7 +58,9 @@ function runAseprite(): { dir: string; result: LuaResult } {
 }
 
 describe("extension handlers in Aseprite", { skip }, () => {
-  const { dir, result } = skip ? { dir: "", result: { cases: [] } as LuaResult } : runAseprite();
+  const { dir, result } = skip
+    ? { dir: "", result: { cases: [] } as LuaResult }
+    : runAseprite();
   after(() => {
     if (dir) {
       rmSync(dir, { force: true, recursive: true });

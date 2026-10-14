@@ -74,8 +74,10 @@ const clone = (s: State): State => ({
   tags: s.tags.map((t) => ({ ...t })),
 });
 const key = (layer: string, frame: number): string => `${layer}@${frame}`;
-const within = (path: string, root: string): boolean => path === root || path.startsWith(`${root}/`);
-const equal = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+const within = (path: string, root: string): boolean =>
+  path === root || path.startsWith(`${root}/`);
+const equal = (a: Uint8Array, b: Uint8Array): boolean =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
 
 class StructureError extends Error {}
 
@@ -149,7 +151,9 @@ export function createFakeLink(): FakeLink {
             ? from.slice(0, from.lastIndexOf("/") + 1) + op.rename
             : op.rename;
           for (const x of s.layers) {
-            if (within(x.path, from)) {x.path = to + x.path.slice(from.length);}
+            if (within(x.path, from)) {
+              x.path = to + x.path.slice(from.length);
+            }
           }
           for (const [k, v] of [...s.cels]) {
             const at = k.lastIndexOf("@");
@@ -166,15 +170,18 @@ export function createFakeLink(): FakeLink {
         find(op.path);
         s.layers = s.layers.filter((x) => !within(x.path, op.path));
         for (const k of [...s.cels.keys()]) {
-          if (within(k.slice(0, k.lastIndexOf("@")), op.path)) {s.cels.delete(k);}
+          if (within(k.slice(0, k.lastIndexOf("@")), op.path)) {
+            s.cels.delete(k);
+          }
         }
         return;
       }
       case "frames.set": {
         s.frames = op.durations.map((duration) => ({ duration }));
         for (const k of [...s.cels.keys()]) {
-          if (Number(k.slice(k.lastIndexOf("@") + 1)) >= op.count)
-            {s.cels.delete(k);}
+          if (Number(k.slice(k.lastIndexOf("@") + 1)) >= op.count) {
+            s.cels.delete(k);
+          }
         }
         return;
       }
@@ -221,23 +228,28 @@ export function createFakeLink(): FakeLink {
       const entry = need(sprite);
       const next = clone(entry.state);
       try {
-        for (const op of ops) {applyOp(next, op);}
+        for (const op of ops) {
+          applyOp(next, op);
+        }
         for (const w of writes) {
           const l = next.layers.find((x) => x.path === w.layer);
-          if (!l || l.group)
-            {throw new StructureError(`layer '${w.layer}' does not exist`);}
-          if (w.frame >= next.frames.length)
-            {throw new StructureError(`frame ${w.frame} does not exist`);}
+          if (!l || l.group) {
+            throw new StructureError(`layer '${w.layer}' does not exist`);
+          }
+          if (w.frame >= next.frames.length) {
+            throw new StructureError(`frame ${w.frame} does not exist`);
+          }
         }
       } catch (error) {
-        if (error instanceof StructureError)
-          {return {
+        if (error instanceof StructureError) {
+          return {
             result: {
               applied: false,
               reason: "structure",
               message: error.message,
             },
-          };}
+          };
+        }
         throw error;
       }
       const blank = new Uint8Array(next.width * next.height * 4);
@@ -253,14 +265,18 @@ export function createFakeLink(): FakeLink {
           });
         }
       });
-      if (conflicts.length)
-        {return {
+      if (conflicts.length) {
+        return {
           blobs: current,
           result: { applied: false, conflicts, reason: "conflict" },
-        };}
+        };
+      }
       for (const w of writes) {
-        if (w.next === null) {next.cels.delete(key(w.layer, w.frame));}
-        else {next.cels.set(key(w.layer, w.frame), Uint8Array.from(blobs[w.next]));}
+        if (w.next === null) {
+          next.cels.delete(key(w.layer, w.frame));
+        } else {
+          next.cels.set(key(w.layer, w.frame), Uint8Array.from(blobs[w.next]));
+        }
       }
       entry.undo.push({ label: `MCP: ${label}`, state: entry.state });
       entry.redo = [];
@@ -281,7 +297,9 @@ export function createFakeLink(): FakeLink {
             ? [entry.undo, entry.redo]
             : [entry.redo, entry.undo];
         const step = from.pop();
-        if (!step) {break;}
+        if (!step) {
+          break;
+        }
         to.push({ label: step.label, state: entry.state });
         entry.state = step.state;
       }
@@ -296,7 +314,9 @@ export function createFakeLink(): FakeLink {
       height: number;
       colorMode?: ColorMode;
     }): Reply {
-      if (colorMode !== "rgb") {throw new Error("fake link: rgb sprites only");}
+      if (colorMode !== "rgb") {
+        throw new Error("fake link: rgb sprites only");
+      }
       const id = nextId;
       nextId += 1;
       const state: State = {
@@ -334,8 +354,9 @@ export function createFakeLink(): FakeLink {
     save({ path }: { path?: string }): Reply {
       const { state } = need();
       const saved = path ?? state.path;
-      if (!saved)
-        {throw new Error("Sprite has no file name yet - please pass a path.");}
+      if (!saved) {
+        throw new Error("Sprite has no file name yet - please pass a path.");
+      }
       state.path = saved;
       return { result: { copy: false, saved } };
     },
@@ -373,7 +394,9 @@ export function createFakeLink(): FakeLink {
       return { blobs, result };
     },
     sprites({ select }: { select?: number | string } = {}): Reply {
-      if (select !== undefined) {active = need(select).state.id;}
+      if (select !== undefined) {
+        active = need(select).state.id;
+      }
       const list = [...sprites.values()].map(({ state: s }) => ({
         active: s.id === active,
         frames: s.frames.length,
@@ -409,8 +432,12 @@ export function createFakeLink(): FakeLink {
       blobs: Uint8Array[] = []
     ): Promise<LinkReply<T>> {
       log.push(cmd);
-      if (link.beforeRequest) {await link.beforeRequest(cmd, args);}
-      if (!Object.hasOwn(handlers, cmd)) {throw new Error(`Unknown command '${cmd}'.`);}
+      if (link.beforeRequest) {
+        await link.beforeRequest(cmd, args);
+      }
+      if (!Object.hasOwn(handlers, cmd)) {
+        throw new Error(`Unknown command '${cmd}'.`);
+      }
       const h = handlers[cmd as keyof typeof handlers] as (
         a: never,
         b: Uint8Array[]
@@ -443,5 +470,10 @@ export function pixel(
     return null;
   }
   const i = (y * width + x) * 4;
-  return [bytes[i] ?? 0, bytes[i + 1] ?? 0, bytes[i + 2] ?? 0, bytes[i + 3] ?? 0];
+  return [
+    bytes[i] ?? 0,
+    bytes[i + 1] ?? 0,
+    bytes[i + 2] ?? 0,
+    bytes[i + 3] ?? 0,
+  ];
 }

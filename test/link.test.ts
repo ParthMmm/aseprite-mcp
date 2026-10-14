@@ -216,7 +216,10 @@ test("an old extension connects but the status warns", () =>
     const { ws } = await fakeExtension(link.status().port, {
       extension: "0.0.9",
     });
-    assert.match(String(link.status().error), /0\.0\.9\) is older than 0\.1\.0/);
+    assert.match(
+      String(link.status().error),
+      /0\.0\.9\) is older than 0\.1\.0/
+    );
     ws.close();
   }));
 
@@ -227,7 +230,10 @@ test("a busy port is a retrying status, then the link binds once the port frees"
   const link = createLink({ port, retryMs: 100, token: TOKEN });
   try {
     await sleep(150);
-    assert.match(String(link.status().error), new RegExp(`Port ${port} is busy`));
+    assert.match(
+      String(link.status().error),
+      new RegExp(`Port ${port} is busy`)
+    );
     await new Promise((r) => blocker.close(r));
     await link.listening;
     assert.equal(link.status().error, null);

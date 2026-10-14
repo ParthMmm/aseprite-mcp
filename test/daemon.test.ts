@@ -120,7 +120,10 @@ test("a failed program is an MCP tool error; a successful one is not", async () 
     name: "execute",
   });
   assert.equal(failed.isError, true);
-  assert.equal(JSON.parse(blocks(failed)[0]?.text ?? "").error.message, "Error: boom");
+  assert.equal(
+    JSON.parse(blocks(failed)[0]?.text ?? "").error.message,
+    "Error: boom"
+  );
   const ok = await client.callTool({
     arguments: { code: "1" },
     name: "execute",
