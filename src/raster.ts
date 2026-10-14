@@ -1,5 +1,6 @@
 // Every per-pixel loop. A Canvas is one full-canvas RGBA cel; ops overwrite (no blending) and return the
 // number of pixels whose visible value changed. All alpha-0 pixels count as the same colour.
+import { wholeNumber } from "./check.ts";
 import {
   normHex,
   parseHex,
@@ -720,11 +721,7 @@ const mostCommon = (counts: Map<number, number>): number => {
  * the block has none. Partial blocks at the right and bottom edges count too.
  */
 export const downscale = (cv: Canvas, factor: number): Canvas => {
-  if (!Number.isInteger(factor) || factor < 1) {
-    throw new Error(
-      `downscale(factor): factor must be a whole number >= 1, got ${factor}.`
-    );
-  }
+  wholeNumber("downscale(factor): factor", factor);
   const out = blank(
     Math.ceil(cv.width / factor),
     Math.ceil(cv.height / factor)
@@ -753,11 +750,7 @@ export const downscale = (cv: Canvas, factor: number): Canvas => {
 
 /** Distinct visible colours, most frequent first, at most `max`. */
 export const colors = (cv: Canvas, max = 32): string[] => {
-  if (!Number.isInteger(max) || max < 1) {
-    throw new Error(
-      `colors(max): max must be a whole number >= 1, got ${max}.`
-    );
-  }
+  wholeNumber("colors(max): max", max);
   const counts = new Map<number, number>();
   for (let i = 0; i < cv.data.length; i += 4) {
     const key = keyAt(cv.data, i);

@@ -116,10 +116,15 @@ export const composite = (
 const checkerShade = (x: number, y: number, cell: number): number =>
   (Math.trunc(x / cell) + Math.trunc(y / cell)) & 1 ? 255 : 204;
 
-const guardImage = (what: string, W: number, H: number): void => {
+export const guardImage = (
+  what: string,
+  W: number,
+  H: number,
+  hint = ""
+): void => {
   if (W * H > MAX_OUTPUT_PIXELS) {
     throw new Error(
-      `${what} would be ${W}x${H} px, over the limit of ${MAX_OUTPUT_PIXELS} pixels.`
+      `${what} would be ${W}x${H} px, over the limit of ${MAX_OUTPUT_PIXELS} pixels${hint}.`
     );
   }
 };
@@ -127,13 +132,8 @@ const guardImage = (what: string, W: number, H: number): void => {
 const defaultScale = (w: number, h: number, target: number): number =>
   Math.max(1, Math.floor(target / Math.max(w, h)));
 
-const guardSize = (W: number, H: number, scale: number): void => {
-  if (W * H > MAX_OUTPUT_PIXELS) {
-    throw new Error(
-      `A ${scale}x view would be ${W}x${H} px, over the limit; use a smaller scale or a rect.`
-    );
-  }
-};
+const guardSize = (W: number, H: number, scale: number): void =>
+  guardImage(`A ${scale}x view`, W, H, "; use a smaller scale or a rect");
 
 /**
  * Upscaled view; transparency shows a grey checkerboard, or `background` when given. Without `scale` the longer
@@ -313,11 +313,19 @@ export const upscale = (cv: Canvas, scale: number): Canvas => {
   const H = cv.height * scale;
   guardImage(`A frame at ${scale}x`, W, H);
   const data = new Uint8Array(W * H * 4);
-  for (let y = 0; y < H; y += 1) {
-    const sy = Math.trunc(y / scale);
+  const rowBytes = W * 4;
+  for (let sy = 0; sy < cv.height; sy += 1) {
+    const top = sy * scale * rowBytes;
     for (let x = 0; x < W; x += 1) {
       const s = (sy * cv.width + Math.trunc(x / scale)) * 4;
-      data.set(cv.data.subarray(s, s + 4), (y * W + x) * 4);
+      const o = top + x * 4;
+      data[o] = cv.data[s];
+      data[o + 1] = cv.data[s + 1];
+      data[o + 2] = cv.data[s + 2];
+      data[o + 3] = cv.data[s + 3];
+    }
+    for (let r = 1; r < scale; r += 1) {
+      data.copyWithin(top + r * rowBytes, top, top + rowBytes);
     }
   }
   return { data, height: H, width: W };
@@ -491,8 +499,10 @@ export const decodePng = (file: Uint8Array): Canvas => {
   );
   const data = new Uint8Array(width * height * 4);
   const key = trns.length >= 2 ? trns.readUInt16BE(0) : -1;
-  const rgbKey =
-    trns.length >= 6 ? [0, 2, 4].map((k) => trns.readUInt16BE(k)) : null;
+  const [keyR, keyG, keyB] =
+    trns.length >= 6
+      ? [trns.readUInt16BE(0), trns.readUInt16BE(2), trns.readUInt16BE(4)]
+      : [-1, -1, -1];
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const o = (y * width + x) * 4;
@@ -507,14 +517,19 @@ export const decodePng = (file: Uint8Array): Canvas => {
             `PNG pixel uses palette index ${v}, outside its palette.`
           );
         }
-        data.set(plte.subarray(v * 3, v * 3 + 3), o);
+        data[o] = plte[v * 3];
+        data[o + 1] = plte[v * 3 + 1];
+        data[o + 2] = plte[v * 3 + 2];
         data[o + 3] = v < trns.length ? trns[v] : 255;
       } else if (type === 0 || type === 4) {
         data.fill(px[i], o, o + 3);
         data[o + 3] = type === 4 ? px[i + 1] : 255 * Number(px[i] !== key);
       } else {
-        data.set(px.subarray(i, i + 3), o);
-        const keyed = rgbKey?.every((v, c) => v === px[i + c]) ?? false;
+        data[o] = px[i];
+        data[o + 1] = px[i + 1];
+        data[o + 2] = px[i + 2];
+        const keyed =
+          px[i] === keyR && px[i + 1] === keyG && px[i + 2] === keyB;
         data[o + 3] = type === 6 ? px[i + 3] : 255 * Number(!keyed);
       }
     }

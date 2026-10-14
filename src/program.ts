@@ -16,6 +16,7 @@ import nodePath from "node:path";
 import { CodeMode, Extension } from "@opencode/codemode";
 import { Effect } from "effect";
 
+import { checkCanvasSize, messageOf, wholeNumber } from "./check.ts";
 import { ramp, loadPalette, parseHex, savePalette } from "./color.ts";
 import * as D from "./draft.ts";
 import type { CelKey, Draft } from "./draft.ts";
@@ -27,6 +28,7 @@ import { compareVersions } from "./link.ts";
 import type { Link } from "./link.ts";
 import * as R from "./raster.ts";
 import {
+  guardImage,
   composite,
   critiqueSheet,
   decodePng,
@@ -299,13 +301,6 @@ const isSnapshot = (v: unknown): v is D.SnapshotReply =>
 const isCommitReply = (v: unknown): v is CommitReply =>
   isRecord(v) && (v.conflicts === undefined || Array.isArray(v.conflicts));
 
-const messageOf = (e: unknown): string =>
-  String(
-    (typeof e === "object" && e !== null && "message" in e
-      ? e.message
-      : undefined) ?? e
-  );
-
 const mb = (n: number): number => Math.ceil(n / (1024 * 1024));
 
 const noteClip = (run: Run, call: string, pixels: number, d: Draft): void => {
@@ -532,21 +527,8 @@ const imageHandle = (run: Run, picture: R.Canvas): ImageHandle => {
   };
 };
 
-const wholeOption = (
-  name: string,
-  value: unknown,
-  fallback: number
-): number => {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(
-      `export: ${name} must be a whole number >= 1, got ${JSON.stringify(value)}.`
-    );
-  }
-  return value;
-};
+const wholeOption = (name: string, value: unknown, fallback: number): number =>
+  value === undefined ? fallback : wholeNumber(`export: ${name}`, value);
 
 /** Frame range of the whole sprite, or of one tag. */
 const exportRange = (d: Draft, tag: unknown): { from: number; to: number } => {
@@ -819,16 +801,25 @@ export const createRuntime = ({
       nameOrPath.length - nodePath.extname(nameOrPath).length
     );
     const pathFor = (ext: string) => allowedPath(`${base}${ext}`);
-    const sheetPaths = sheet
-      ? { json: await pathFor(".json"), png: await pathFor(".png") }
-      : null;
-    const gifPath = gif ? await pathFor(".gif") : null;
+    const [jsonPath, pngPath, gifPath] = await Promise.all([
+      sheet ? pathFor(".json") : null,
+      sheet ? pathFor(".png") : null,
+      gif ? pathFor(".gif") : null,
+    ]);
+    const sheetPaths =
+      jsonPath && pngPath ? { json: jsonPath, png: pngPath } : null;
     const files: [string, Buffer | string][] = [];
     await commitDraft(run, st, AUTO_LABEL);
     const { d } = st;
     const { durations, tags } = d.structure;
     const { from, to } = exportRange(d, o.tag);
     const indices = Array.from({ length: to - from + 1 }, (_, n) => from + n);
+    // Every scaled frame is held at once, so the limit applies to all of them together.
+    guardImage(
+      `${indices.length} frames at ${scale}x`,
+      d.sprite.width * scale,
+      d.sprite.height * scale * indices.length
+    );
     const frames = indices.map((f) => upscale(flatten(d, f), scale));
     const [{ width, height }] = frames;
     const out: ExportResult = { frames: frames.length, height, width };
@@ -879,9 +870,7 @@ export const createRuntime = ({
     action: "undo" | "redo",
     n = 1
   ): Promise<void> => {
-    if (!Number.isInteger(n) || n < 1) {
-      throw new Error(`${action}(n): n must be a whole number >= 1, got ${n}.`);
-    }
+    wholeNumber(`${action}(n): n`, n);
     if (pending(st.d).dirty) {
       throw new Error(
         `${action}() would drop this program's uncommitted edits; call await s.commit() first.`
@@ -944,13 +933,7 @@ export const createRuntime = ({
     const { width: w, height: h, colorMode, transparentIndex } = d.sprite;
     const x = o.x ?? Math.floor((width - w) / 2);
     const y = o.y ?? height - h;
-    if (
-      ![width, height].every((v) => Number.isInteger(v) && v >= 1 && v <= 4096)
-    ) {
-      throw new Error(
-        `resize(width, height): whole numbers 1-4096, got ${width}, ${height}.`
-      );
-    }
+    checkCanvasSize("resize(width, height)", width, height);
     if (!Number.isInteger(x) || !Number.isInteger(y)) {
       throw new TypeError(
         `resize: x and y must be whole numbers, got ${x}, ${y}.`
@@ -1050,11 +1033,7 @@ export const createRuntime = ({
   const openSprite = async (o: SpriteOptions): Promise<unknown> => {
     if (o.new) {
       const [w, h] = o.new;
-      if (![w, h].every((x) => Number.isInteger(x) && x >= 1 && x <= 4096)) {
-        throw new Error(
-          `sprite({ new: [w, h] }): whole numbers 1-4096, got ${JSON.stringify(o.new)}.`
-        );
-      }
+      checkCanvasSize("sprite({ new: [w, h] })", w, h);
       const { result } = await link.request("new_sprite", {
         colorMode: o.colorMode ?? "rgb",
         height: h,

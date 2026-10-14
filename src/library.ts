@@ -7,6 +7,8 @@ import nodePath from "node:path";
 import { parse } from "acorn";
 import type { Program } from "acorn";
 
+import { messageOf } from "./check.ts";
+
 const NAME = /^[a-z0-9_-]{1,40}$/u;
 
 /** Parsed exactly as @opencode/codemode parses a program. */
@@ -87,10 +89,7 @@ export const saveLib = async (
     program = parseScript(code);
   } catch (error) {
     const { line } = (error as { loc?: { line: number } }).loc ?? {};
-    const message = String((error as Error).message).replace(
-      / \(\d+:\d+\)$/u,
-      ""
-    );
+    const message = messageOf(error).replace(/ \(\d+:\d+\)$/u, "");
     throw new Error(
       `lib("${safe}"): syntax error${line ? ` at line ${line}` : ""}: ${message}. Nothing was saved.`,
       { cause: error }
@@ -146,7 +145,7 @@ const resolveOrder = async (
         source = await readLib(dir, name);
       } catch (error) {
         const where = path.length ? ` in library '${path.at(-1)}'` : "";
-        throw new Error(`use("${name}")${where}: ${(error as Error).message}`, {
+        throw new Error(`use("${name}")${where}: ${messageOf(error)}`, {
           cause: error,
         });
       }

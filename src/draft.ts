@@ -1,6 +1,7 @@
 // The host-side mirror of ONE sprite for ONE program run; pixel truth during a program lives here.
 // Each program owns its Draft. Aseprite is the only shared state, and the only merge point is commit:
 // compare-and-swap per cel in Lua, then merge3 here when the artist changed a cel underneath us.
+import { wholeNumber } from "./check.ts";
 import type { Rect } from "./raster.ts";
 import { fromRgba } from "./wire.ts";
 import type { ColorMode } from "./wire.ts";
@@ -263,9 +264,7 @@ export const setFrames = (
   count: number,
   durations?: unknown
 ): void => {
-  if (!Number.isInteger(count) || count < 1) {
-    throw new Error(`Frame count must be a whole number >= 1, got ${count}.`);
-  }
+  wholeNumber("Frame count", count);
   const old = d.structure.durations;
   const n = old.length;
   if (Array.isArray(durations) && durations.length !== count) {
