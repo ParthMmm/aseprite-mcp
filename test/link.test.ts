@@ -15,7 +15,6 @@ import { PROTOCOL, encodeFrame, decodeFrame } from "../src/wire.ts";
 import type { WireMessage } from "../src/wire.ts";
 
 // src/ws.d.ts declares no client constructor, so the test supplies the one signature it uses.
-const Client = WebSocket as unknown as new (url: string) => WebSocket;
 const TOKEN = "a".repeat(48);
 const hmac = (token: string, text: string) =>
   createHmac("sha256", token).update(text).digest("hex");
@@ -42,7 +41,7 @@ const fakeExtension = async (
   }: ExtensionOptions = {}
 ) => {
   const url = `ws://127.0.0.1:${port}`;
-  const ws = new Client(url);
+  const ws = new WebSocket(url);
   const clientNonce = randomBytes(16).toString("hex");
   const reply = (msg: WireMessage, blobs: Uint8Array[]) => {
     const out = onRequest(msg, blobs);
