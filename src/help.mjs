@@ -49,19 +49,6 @@ c.outline()
 return await s.view({ critique: true })`;
 
 const TOPICS = {
-  maps: `Pixel maps (map / read)
-- A palette maps one-character keys to colours; each row string is one line of pixels, left to right.
-  c.map({ k: "#1a1c2c", r: "#b13e53", w: "#f4f4f4" }, ["..kk..", ".krrk.", "krwrrk"], { x: 4, y: 2 })
-- "." and space leave the pixel unchanged. Map a key to "#00000000" to erase. Rows may differ in length.
-- flip: "h" mirrors each row, "v" reverses the row order, "hv" both. Use it for symmetric parts.
-- Repeated parts: keep their rows in a const and map them at several x/y offsets (or flip them).
-- read({ rect, palette }) returns the same format. Pass your palette so known colours keep their keys;
-  new colours get fresh keys. Edit the rows in JS and map them back: read -> change -> map is lossless.
-- Big generated art: compute the rows in the program instead of writing them out by hand.
-- Palette: pick 4-16 colours first: a dark outline, 2-3 shades per material, 1 highlight.
-  ramp("#b13e53", "rstu") gives hue-shifted shades, dark to light (cool shadows, warm lights).
-  palette("hero", P) saves a palette by name; await palette("hero") loads it in a later program.`,
-
   animation: `Animation
 - s.setFrames(n, { duration: 100 }) sets the frame count. New frames copy the last frame, so draw frame 0
   fully first, then change only what moves in later frames. duration is in milliseconds, one number or one per frame.
@@ -71,17 +58,6 @@ const TOPICS = {
 - s.tag("run", 0, 7, { direction: "pingpong" }) names a frame range.
 - Check motion with s.view({ frame: "all" }): every frame side by side in one image.
 - The whole animation still commits as one undo step when the program returns.`,
-
-  critique: `Critique
-- s.view({ critique: true }) shows four panels: colour, grayscale values, silhouette and true size (1x).
-  Values: the shapes must read in gray; if not, the shades are too close. Silhouette: the pose must read
-  as a solid shape. True size: details smaller than a pixel cluster disappear.
-- Zoom into a detail with rect: s.view({ rect: [8, 8, 16, 16] }).
-- Look once after the main shapes, then fix only the rows that are wrong (map with x/y). Do not view after
-  every small change; each view is an image you must read.
-- Style: light from the top-left. Avoid pure black outlines on coloured areas; outline() with the default
-  selective mode derives a darker, cooler edge from each neighbour. Draw flat shapes first, then shading,
-  then highlights, then outline.`,
 
   conflicts: `Drawing together with the artist
 - Your program edits a private draft. At commit, every cel you wrote is compared with what Aseprite holds now.
@@ -95,6 +71,17 @@ const TOPICS = {
 - undo/redo refuse to run while you have uncommitted edits; commit first. They act on whole undo steps,
   and each of your programs is one step.`,
 
+  critique: `Critique
+- s.view({ critique: true }) shows four panels: colour, grayscale values, silhouette and true size (1x).
+  Values: the shapes must read in gray; if not, the shades are too close. Silhouette: the pose must read
+  as a solid shape. True size: details smaller than a pixel cluster disappear.
+- Zoom into a detail with rect: s.view({ rect: [8, 8, 16, 16] }).
+- Look once after the main shapes, then fix only the rows that are wrong (map with x/y). Do not view after
+  every small change; each view is an image you must read.
+- Style: light from the top-left. Avoid pure black outlines on coloured areas; outline() with the default
+  selective mode derives a darker, cooler edge from each neighbour. Draw flat shapes first, then shading,
+  then highlights, then outline.`,
+
   files: `Files
 - sprite({ open: "/abs/path.aseprite" }) opens a file; sprite({ new: [32, 32] }) creates a sprite.
   sprite({ id }) or sprite({ name }) picks an open sprite; sprites() lists them.
@@ -104,14 +91,34 @@ const TOPICS = {
   Pending edits are committed first. Export with a .png or .gif name.
 - Lost or unsaved work: the daemon keeps automatic backup copies after each commit.
 - Keep sprites small: 16x16 to 64x64 is typical pixel art.`,
+
+  maps: `Pixel maps (map / read)
+- A palette maps one-character keys to colours; each row string is one line of pixels, left to right.
+  c.map({ k: "#1a1c2c", r: "#b13e53", w: "#f4f4f4" }, ["..kk..", ".krrk.", "krwrrk"], { x: 4, y: 2 })
+- "." and space leave the pixel unchanged. Map a key to "#00000000" to erase. Rows may differ in length.
+- flip: "h" mirrors each row, "v" reverses the row order, "hv" both. Use it for symmetric parts.
+- Repeated parts: keep their rows in a const and map them at several x/y offsets (or flip them).
+- read({ rect, palette }) returns the same format. Pass your palette so known colours keep their keys;
+  new colours get fresh keys. Edit the rows in JS and map them back: read -> change -> map is lossless.
+- Big generated art: compute the rows in the program instead of writing them out by hand.
+- Palette: pick 4-16 colours first: a dark outline, 2-3 shades per material, 1 highlight.
+  ramp("#b13e53", "rstu") gives hue-shifted shades, dark to light (cool shadows, warm lights).
+  palette("hero", P) saves a palette by name; await palette("hero") loads it in a later program.`,
 };
+
+// Most useful first; the agent reads this list in order.
+const TOPIC_ORDER = ["maps", "animation", "critique", "conflicts", "files"];
 
 /** help() lists the topics; help(topic) returns its text. */
 export function help(topic) {
   if (topic === undefined || topic === null || topic === "") {
-    return `Topics: ${Object.keys(TOPICS).join(", ")}. Call help("maps") etc.`;
+    return `Topics: ${TOPIC_ORDER.join(", ")}. Call help("maps") etc.`;
   }
   const text = TOPICS[String(topic).toLowerCase()];
-  if (!text) throw new Error(`No help topic '${topic}'. Topics: ${Object.keys(TOPICS).join(", ")}.`);
+  if (!text) {
+    throw new Error(
+      `No help topic '${topic}'. Topics: ${TOPIC_ORDER.join(", ")}.`
+    );
+  }
   return text;
 }

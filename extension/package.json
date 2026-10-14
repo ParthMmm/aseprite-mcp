@@ -1,13 +1,21 @@
 {
   "name": "aseprite-mcp",
   "displayName": "Aseprite MCP",
-  "description": "Connects Aseprite to the aseprite-mcp daemon so an AI assistant can draw in your open sprites.",
   "version": "0.1.0",
-  "author": { "name": "Parth Mangrola" },
-  "publisher": "ParthMmm",
+  "description": "Connects Aseprite to the aseprite-mcp daemon so an AI assistant can draw in your open sprites.",
+  "categories": [
+    "Scripts"
+  ],
   "license": "Unlicense",
-  "categories": ["Scripts"],
+  "author": {
+    "name": "Parth Mangrola"
+  },
+  "publisher": "ParthMmm",
   "contributes": {
-    "scripts": [{ "path": "./plugin.lua" }]
+    "scripts": [
+      {
+        "path": "./plugin.lua"
+      }
+    ]
   }
 }

@@ -3,11 +3,14 @@
 import { readFileSync } from "node:fs";
 import { env, argv, exit, stderr, stdout } from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
 import { loadToken } from "../src/files.mjs";
 import { health, runProxy, shutdown } from "../src/stdio-proxy.mjs";
 
-const binPath = fileURLToPath(import.meta.url);
-const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const binPath = import.meta.filename;
+const { version } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf-8")
+);
 const httpPort = Number(env.ASEPRITE_MCP_HTTP_PORT) || 9124;
 const wsPort = Number(env.ASEPRITE_MCP_PORT) || 9123;
 const log = (...parts) => stderr.write(`[aseprite-mcp] ${parts.join(" ")}\n`);
@@ -32,9 +35,20 @@ Environment:
 `;
 
 async function serve() {
-  const program = await import(env.ASEPRITE_MCP_PROGRAM ? pathToFileURL(env.ASEPRITE_MCP_PROGRAM).href : "../src/program.mjs");
+  const program = await import(
+    env.ASEPRITE_MCP_PROGRAM
+      ? pathToFileURL(env.ASEPRITE_MCP_PROGRAM).href
+      : "../src/program.mjs"
+  );
   const { startDaemon } = await import("../src/daemon.mjs");
-  const daemon = await startDaemon({ program, version, httpPort, wsPort, onShutdown: () => exit(0), log });
+  const daemon = await startDaemon({
+    httpPort,
+    log,
+    onShutdown: () => exit(0),
+    program,
+    version,
+    wsPort,
+  });
   if (!daemon) {
     log(`A daemon already answers on port ${httpPort}; leaving it running.`);
     return exit(0);
@@ -47,14 +61,18 @@ async function serve() {
 async function status() {
   const h = await health(httpPort);
   if (!h) {
-    log(`No daemon on port ${httpPort}. Start one with \`aseprite-mcp serve\`.`);
+    log(
+      `No daemon on port ${httpPort}. Start one with \`aseprite-mcp serve\`.`
+    );
     return exit(1);
   }
-  stdout.write(JSON.stringify(h, null, 2) + "\n");
+  stdout.write(`${JSON.stringify(h, null, 2)}\n`);
 }
 
 async function stop() {
-  if (!(await health(httpPort))) return stdout.write(`No daemon is running on port ${httpPort}.\n`);
+  if (!(await health(httpPort))) {
+    return stdout.write(`No daemon is running on port ${httpPort}.\n`);
+  }
   if (!(await shutdown(httpPort))) {
     log(`The daemon on port ${httpPort} did not accept the stop request.`);
     return exit(1);
@@ -64,15 +82,19 @@ async function stop() {
 
 async function token(rest) {
   const renew = rest.includes("--new");
-  stdout.write((await loadToken({ renew })) + "\n");
-  if (renew) log("New token saved. Paste it into the Aseprite MCP window, and run `aseprite-mcp stop` so the daemon picks it up.");
+  stdout.write(`${await loadToken({ renew })}\n`);
+  if (renew) {
+    log(
+      "New token saved. Paste it into the Aseprite MCP window, and run `aseprite-mcp stop` so the daemon picks it up."
+    );
+  }
 }
 
 const [command, ...rest] = argv.slice(2);
 const commands = { serve, status, stop, token: () => token(rest) };
 
 if (command === undefined) {
-  await runProxy({ port: httpPort, version, binPath, log });
+  await runProxy({ binPath, log, port: httpPort, version });
 } else if (commands[command]) {
   await commands[command]();
 } else {

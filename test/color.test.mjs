@@ -1,10 +1,19 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { test } from "node:test";
+
 import {
-  normHex, parseHex, formatHex, rgbToOklch, oklchToRgb, ramp, loadPalette, savePalette, loadPalettes,
+  normHex,
+  parseHex,
+  formatHex,
+  rgbToOklch,
+  oklchToRgb,
+  ramp,
+  loadPalette,
+  savePalette,
+  loadPalettes,
 } from "../src/color.mjs";
 
 test("hex parse and format accept every short and long form", () => {
@@ -29,8 +38,12 @@ test("ramp keeps the base in the middle and runs dark to light", () => {
   const p = ramp("#b13e53", "abcde");
   assert.deepEqual(Object.keys(p), ["a", "b", "c", "d", "e"]);
   assert.equal(p.c, "#b13e53");
-  const L = Object.values(p).map((c) => rgbToOklch(...parseHex(c).slice(0, 3))[0]);
-  for (let i = 1; i < L.length; i++) assert.ok(L[i] > L[i - 1], `L rises at ${i}: ${L}`);
+  const L = Object.values(p).map(
+    (c) => rgbToOklch(...parseHex(c).slice(0, 3))[0]
+  );
+  for (let i = 1; i < L.length; i++) {
+    assert.ok(L[i] > L[i - 1], `L rises at ${i}: ${L}`);
+  }
 });
 
 test("hueShift 0 keeps the hue; a larger shift moves the shadow further", () => {
@@ -54,11 +67,23 @@ test("named palettes save, load and survive other names", async () => {
     assert.deepEqual(await loadPalettes(file), {});
     await savePalette(file, "skin", { a: "#ffcd75", b: "#b13e53" });
     await savePalette(file, "sea", { s: "#29366f" });
-    assert.deepEqual(await loadPalette(file, "skin"), { a: "#ffcd75", b: "#b13e53" });
-    assert.deepEqual(Object.keys(JSON.parse(await readFile(file, "utf8"))), ["skin", "sea"]);
-    await assert.rejects(loadPalette(file, "nope"), /No saved palette 'nope'. Saved: skin, sea/);
-    await assert.rejects(savePalette(file, "bad", { x: "blue" }), /Not a colour/);
+    assert.deepEqual(await loadPalette(file, "skin"), {
+      a: "#ffcd75",
+      b: "#b13e53",
+    });
+    assert.deepEqual(Object.keys(JSON.parse(await readFile(file, "utf-8"))), [
+      "skin",
+      "sea",
+    ]);
+    await assert.rejects(
+      loadPalette(file, "nope"),
+      /No saved palette 'nope'. Saved: skin, sea/
+    );
+    await assert.rejects(
+      savePalette(file, "bad", { x: "blue" }),
+      /Not a colour/
+    );
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { force: true, recursive: true });
   }
 });

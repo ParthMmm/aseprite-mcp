@@ -2,8 +2,24 @@
   "name": "aseprite-mcp",
   "version": "0.1.0",
   "description": "MCP server that lets an AI agent draw pixel art live in Aseprite by writing JavaScript programs",
-  "type": "module",
-  "main": "bin/aseprite-mcp.mjs",
+  "keywords": [
+    "ai-agent",
+    "aseprite",
+    "code-mode",
+    "mcp",
+    "model-context-protocol",
+    "pixel-art"
+  ],
+  "homepage": "https://github.com/ParthMmm/aseprite-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ParthMmm/aseprite-mcp/issues"
+  },
+  "license": "Unlicense",
+  "author": "Parth Mangrola",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ParthMmm/aseprite-mcp.git"
+  },
   "bin": {
     "aseprite-mcp": "bin/aseprite-mcp.mjs"
   },
@@ -15,28 +31,15 @@
     "DISCLAIMER.md",
     "LICENSE"
   ],
+  "type": "module",
+  "main": "bin/aseprite-mcp.mjs",
   "scripts": {
     "start": "node bin/aseprite-mcp.mjs serve",
     "token": "node bin/aseprite-mcp.mjs token",
     "build": "node scripts/build-extension.mjs",
-    "test": "node --test"
-  },
-  "keywords": [
-    "aseprite",
-    "mcp",
-    "model-context-protocol",
-    "pixel-art",
-    "code-mode",
-    "ai-agent"
-  ],
-  "author": "Parth Mangrola",
-  "license": "Unlicense",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ParthMmm/aseprite-mcp.git"
-  },
-  "engines": {
-    "node": ">=20"
+    "test": "node --test",
+    "check": "ultracite check",
+    "fix": "ultracite fix"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -44,8 +47,12 @@
     "effect": "4.0.1",
     "ws": "^8.21.0"
   },
-  "homepage": "https://github.com/ParthMmm/aseprite-mcp#readme",
-  "bugs": {
-    "url": "https://github.com/ParthMmm/aseprite-mcp/issues"
+  "devDependencies": {
+    "oxfmt": "^0.71.0",
+    "oxlint": "^1.88.0",
+    "ultracite": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

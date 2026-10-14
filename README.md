@@ -144,13 +144,13 @@ A `Cel` has `map`, `px`, `line`, `rect`, `ellipse`, `fill`, `outline`, `shift`, 
 Colors are `"#rgb"`, `"#rrggbb"` or `"#rrggbbaa"`. A pixel map uses a palette of one-character keys and one string per row:
 
 ```js
-const s = await sprite({ new: [32, 32] })
-const P = { k: "#1a1c2c", ...ramp("#b13e53", "rst") }
-const c = s.cel("Layer 1")
-c.ellipse([8, 8, 16, 16], P.s, { fill: true })
-c.map(P, ["..tt", ".tsst"], { x: 12, y: 10 })
-c.outline()
-return await s.view({ critique: true })
+const s = await sprite({ new: [32, 32] });
+const P = { k: "#1a1c2c", ...ramp("#b13e53", "rst") };
+const c = s.cel("Layer 1");
+c.ellipse([8, 8, 16, 16], P.s, { fill: true });
+c.map(P, ["..tt", ".tsst"], { x: 12, y: 10 });
+c.outline();
+return await s.view({ critique: true });
 ```
 
 Rules:
