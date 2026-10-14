@@ -41,7 +41,7 @@ test("ramp keeps the base in the middle and runs dark to light", () => {
   const L = Object.values(p).map(
     (c) => rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[0]
   );
-  for (let i = 1; i < L.length; i++) {
+  for (let i = 1; i < L.length; i += 1) {
     assert.ok(L[i] > L[i - 1], `L rises at ${i}: ${L}`);
   }
 });

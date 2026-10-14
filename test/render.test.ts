@@ -16,7 +16,7 @@ function crcOf(buf: Uint8Array) {
   let crc = ~0;
   for (const byte of buf) {
     crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) {
+    for (let bit = 0; bit < 8; bit += 1) {
       crc = (crc >>> 1) ^ (0xed_b8_83_20 & -(crc & 1));
     }
   }
@@ -54,7 +54,7 @@ function decodePng(png: Buffer) {
   const raw = inflateSync(chunks[1].body);
   assert.equal(raw.length, (width * 4 + 1) * height);
   const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
+  for (let y = 0; y < height; y += 1) {
     assert.equal(raw[y * (width * 4 + 1)], 0, "filter 0");
     data.set(
       raw.subarray(y * (width * 4 + 1) + 1, (y + 1) * (width * 4 + 1)),

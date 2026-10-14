@@ -11,7 +11,7 @@ const json = (path: string) => JSON.parse(readFileSync(join(root, path), "utf-8"
 const parts = (v: string) => v.split(".").map(Number);
 const atLeast = (a: string, b: string) => {
   const [x, y] = [parts(a), parts(b)];
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 3; i += 1) {
     if (x[i] !== y[i]) {return x[i] > y[i];}
   }
   return true;

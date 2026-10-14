@@ -42,7 +42,7 @@ const opaque = (bytes: Uint8Array | undefined) => {
   assert.ok(bytes, "cel exists");
   let n = 0;
   for (let i = 3; i < bytes.length; i += 4) {
-    if (bytes[i]) {n++;}
+    if (bytes[i]) {n += 1;}
   }
   return n;
 };

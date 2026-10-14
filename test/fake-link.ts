@@ -1,6 +1,6 @@
 // In-memory Aseprite behind the Link interface: RGB sprites only, full-canvas cel bytes, one undo step per
 // applied commit, compare-and-swap per written cel. Enough for program.test.ts; the real Lua is in extension/.
-import type { Layer, Op, Tag } from "../src/draft.ts";
+import type { Op, Tag } from "../src/draft.ts";
 import type { Link, LinkReply, LinkStatus } from "../src/link.ts";
 import type { Rect } from "../src/raster.ts";
 import type { ColorMode } from "../src/wire.ts";
@@ -231,13 +231,13 @@ export function createFakeLink(): FakeLink {
         }
       } catch (error) {
         if (error instanceof StructureError)
-          return {
+          {return {
             result: {
               applied: false,
               reason: "structure",
               message: error.message,
             },
-          };
+          };}
         throw error;
       }
       const blank = new Uint8Array(next.width * next.height * 4);
@@ -255,8 +255,8 @@ export function createFakeLink(): FakeLink {
       });
       if (conflicts.length)
         {return {
-          result: { applied: false, reason: "conflict", conflicts },
           blobs: current,
+          result: { applied: false, conflicts, reason: "conflict" },
         };}
       for (const w of writes) {
         if (w.next === null) {next.cels.delete(key(w.layer, w.frame));}
@@ -275,7 +275,7 @@ export function createFakeLink(): FakeLink {
       steps?: number;
     }): Reply {
       const entry = need();
-      for (let i = 0; i < steps; i++) {
+      for (let i = 0; i < steps; i += 1) {
         const [from, to] =
           action === "undo"
             ? [entry.undo, entry.redo]
@@ -307,11 +307,11 @@ export function createFakeLink(): FakeLink {
         id,
         layers: [
           {
-            path: "Layer 1",
-            visible: true,
-            opacity: 255,
             blend: "normal",
             group: false,
+            opacity: 255,
+            path: "Layer 1",
+            visible: true,
           },
         ],
         name: `Sprite-${id}`,

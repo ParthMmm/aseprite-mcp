@@ -10,9 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { decodeFrame, encodeFrame } from "../src/wire.ts";
 

@@ -5,8 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import type { Health } from "../../src/stdio-proxy.ts";
 
@@ -43,7 +42,7 @@ export async function isolatedEnv() {
   return {
     base,
     async cleanup() {
-      await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {});
+      await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => { /* empty */ });
       rmSync(dir, { force: true, recursive: true });
     },
     dir,
