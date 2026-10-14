@@ -67,7 +67,7 @@ export interface FakeLink extends Link {
 
 const clone = (s: State): State => ({
   ...s,
-  cels: new Map([...s.cels].map(([k, v]) => [k, v.slice()])),
+  cels: new Map([...s.cels].map(([k, v]) => [k, Uint8Array.from(v)])),
   frames: s.frames.map((f) => ({ ...f })),
   layers: s.layers.map((l) => ({ ...l })),
   palette: [...s.palette],
@@ -149,7 +149,7 @@ export function createFakeLink(): FakeLink {
             ? from.slice(0, from.lastIndexOf("/") + 1) + op.rename
             : op.rename;
           for (const x of s.layers) {
-            if (within(x.path, from)) x.path = to + x.path.slice(from.length);
+            if (within(x.path, from)) {x.path = to + x.path.slice(from.length);}
           }
           for (const [k, v] of [...s.cels]) {
             const at = k.lastIndexOf("@");
@@ -166,7 +166,7 @@ export function createFakeLink(): FakeLink {
         find(op.path);
         s.layers = s.layers.filter((x) => !within(x.path, op.path));
         for (const k of [...s.cels.keys()]) {
-          if (within(k.slice(0, k.lastIndexOf("@")), op.path)) s.cels.delete(k);
+          if (within(k.slice(0, k.lastIndexOf("@")), op.path)) {s.cels.delete(k);}
         }
         return;
       }
@@ -174,7 +174,7 @@ export function createFakeLink(): FakeLink {
         s.frames = op.durations.map((duration) => ({ duration }));
         for (const k of [...s.cels.keys()]) {
           if (Number(k.slice(k.lastIndexOf("@") + 1)) >= op.count)
-            s.cels.delete(k);
+            {s.cels.delete(k);}
         }
         return;
       }
@@ -186,10 +186,10 @@ export function createFakeLink(): FakeLink {
           to: op.to,
         };
         const i = s.tags.findIndex((t) => t.name === op.name);
-        if (i !== -1) {
-          s.tags[i] = tag;
-        } else {
+        if (i === -1) {
           s.tags.push(tag);
+        } else {
+          s.tags[i] = tag;
         }
         return;
       }
@@ -221,24 +221,24 @@ export function createFakeLink(): FakeLink {
       const entry = need(sprite);
       const next = clone(entry.state);
       try {
-        for (const op of ops) applyOp(next, op);
+        for (const op of ops) {applyOp(next, op);}
         for (const w of writes) {
           const l = next.layers.find((x) => x.path === w.layer);
           if (!l || l.group)
-            throw new StructureError(`layer '${w.layer}' does not exist`);
+            {throw new StructureError(`layer '${w.layer}' does not exist`);}
           if (w.frame >= next.frames.length)
-            throw new StructureError(`frame ${w.frame} does not exist`);
+            {throw new StructureError(`frame ${w.frame} does not exist`);}
         }
-      } catch (err) {
-        if (err instanceof StructureError)
+      } catch (error) {
+        if (error instanceof StructureError)
           return {
             result: {
               applied: false,
               reason: "structure",
-              message: err.message,
+              message: error.message,
             },
           };
-        throw err;
+        throw error;
       }
       const blank = new Uint8Array(next.width * next.height * 4);
       const conflicts: { write: number; blob?: number }[] = [];
@@ -249,23 +249,23 @@ export function createFakeLink(): FakeLink {
         if (!equal(cur ?? blank, base ?? blank)) {
           conflicts.push({
             write: i,
-            ...(cur && { blob: current.push(cur.slice()) - 1 }),
+            ...(cur && { blob: current.push(Uint8Array.from(cur)) - 1 }),
           });
         }
       });
       if (conflicts.length)
-        return {
+        {return {
           result: { applied: false, reason: "conflict", conflicts },
           blobs: current,
-        };
+        };}
       for (const w of writes) {
-        if (w.next === null) next.cels.delete(key(w.layer, w.frame));
-        else next.cels.set(key(w.layer, w.frame), blobs[w.next].slice());
+        if (w.next === null) {next.cels.delete(key(w.layer, w.frame));}
+        else {next.cels.set(key(w.layer, w.frame), Uint8Array.from(blobs[w.next]));}
       }
       entry.undo.push({ label: `MCP: ${label}`, state: entry.state });
       entry.redo = [];
       entry.state = next;
-      return { result: { applied: true, label, cels: writes.length } };
+      return { result: { applied: true, cels: writes.length, label } };
     },
     history({
       action,
@@ -281,7 +281,7 @@ export function createFakeLink(): FakeLink {
             ? [entry.undo, entry.redo]
             : [entry.redo, entry.undo];
         const step = from.pop();
-        if (!step) break;
+        if (!step) {break;}
         to.push({ label: step.label, state: entry.state });
         entry.state = step.state;
       }
@@ -296,19 +296,15 @@ export function createFakeLink(): FakeLink {
       height: number;
       colorMode?: ColorMode;
     }): Reply {
-      if (colorMode !== "rgb") throw new Error("fake link: rgb sprites only");
+      if (colorMode !== "rgb") {throw new Error("fake link: rgb sprites only");}
       const id = nextId;
       nextId += 1;
       const state: State = {
-        id,
-        name: `Sprite-${id}`,
-        path: null,
-        width,
-        height,
+        cels: new Map(),
         colorMode,
-        transparentIndex: 0,
-        palette: [],
-        selection: null,
+        frames: [{ duration: 100 }],
+        height,
+        id,
         layers: [
           {
             path: "Layer 1",
@@ -318,14 +314,18 @@ export function createFakeLink(): FakeLink {
             group: false,
           },
         ],
-        frames: [{ duration: 100 }],
+        name: `Sprite-${id}`,
+        palette: [],
+        path: null,
+        selection: null,
         tags: [],
-        cels: new Map(),
+        transparentIndex: 0,
+        width,
       };
-      sprites.set(id, { state, undo: [], redo: [] });
+      sprites.set(id, { redo: [], state, undo: [] });
       active = id;
       return {
-        result: { sprite: true, spriteId: id, name: state.name, width, height },
+        result: { height, name: state.name, sprite: true, spriteId: id, width },
       };
     },
     open({ path }: { path: string }): Reply {
@@ -335,9 +335,9 @@ export function createFakeLink(): FakeLink {
       const { state } = need();
       const saved = path ?? state.path;
       if (!saved)
-        throw new Error("Sprite has no file name yet - please pass a path.");
+        {throw new Error("Sprite has no file name yet - please pass a path.");}
       state.path = saved;
-      return { result: { saved, copy: false } };
+      return { result: { copy: false, saved } };
     },
     snapshot({ sprite }: { sprite?: number | string }): Reply {
       const { state: s } = need(sprite);
@@ -346,43 +346,43 @@ export function createFakeLink(): FakeLink {
       for (const [k, bytes] of s.cels) {
         const at = k.lastIndexOf("@");
         cels.push({
-          layer: k.slice(0, at),
-          frame: Number(k.slice(at + 1)),
           blob: blobs.length,
+          frame: Number(k.slice(at + 1)),
+          layer: k.slice(0, at),
         });
-        blobs.push(bytes.slice());
+        blobs.push(Uint8Array.from(bytes));
       }
       const { id, name, path, width, height, colorMode, transparentIndex } = s;
       const result = {
+        cels,
+        frames: s.frames.map((f) => ({ ...f })),
+        layers: s.layers.map((l) => ({ ...l })),
+        palette: [...s.palette],
         sprite: {
+          colorMode,
+          height,
           id,
           name,
-          width,
-          height,
-          colorMode,
           transparentIndex,
+          width,
           ...(path && { path }),
         },
-        palette: [...s.palette],
-        layers: s.layers.map((l) => ({ ...l })),
-        frames: s.frames.map((f) => ({ ...f })),
         tags: s.tags.map((t) => ({ ...t })),
-        cels,
         ...(s.selection && { selection: s.selection }),
       };
-      return { result, blobs };
+      return { blobs, result };
     },
     sprites({ select }: { select?: number | string } = {}): Reply {
-      if (select !== undefined) active = need(select).state.id;
+      if (select !== undefined) {active = need(select).state.id;}
       const list = [...sprites.values()].map(({ state: s }) => ({
+        active: s.id === active,
+        frames: s.frames.length,
+        height: s.height,
         id: s.id,
         name: s.name,
         width: s.width,
-        height: s.height,
-        frames: s.frames.length,
-        active: s.id === active,
       }));
-      return { result: { sprites: list, active } };
+      return { result: { active, sprites: list } };
     },
   };
 
@@ -409,8 +409,8 @@ export function createFakeLink(): FakeLink {
       blobs: Uint8Array[] = []
     ): Promise<LinkReply<T>> {
       log.push(cmd);
-      if (link.beforeRequest) await link.beforeRequest(cmd, args);
-      if (!Object.hasOwn(handlers, cmd)) throw new Error(`Unknown command '${cmd}'.`);
+      if (link.beforeRequest) {await link.beforeRequest(cmd, args);}
+      if (!Object.hasOwn(handlers, cmd)) {throw new Error(`Unknown command '${cmd}'.`);}
       const h = handlers[cmd as keyof typeof handlers] as (
         a: never,
         b: Uint8Array[]
@@ -419,14 +419,14 @@ export function createFakeLink(): FakeLink {
         structuredClone(args) as never,
         blobs
       );
-      return { result: result as T, blobs: out };
+      return { blobs: out, result: result as T };
     },
     sprite: byId,
     status: (): LinkStatus => ({
       connected: true,
+      error: null,
       extension: "0.1.0",
       port: 9123,
-      error: null,
     }),
   };
   return link;

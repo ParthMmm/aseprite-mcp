@@ -42,7 +42,7 @@ const opaque = (bytes: Uint8Array | undefined) => {
   assert.ok(bytes, "cel exists");
   let n = 0;
   for (let i = 3; i < bytes.length; i += 4) {
-    if (bytes[i]) n++;
+    if (bytes[i]) {n++;}
   }
   return n;
 };
@@ -137,7 +137,7 @@ test("read -> recolor -> map round trip", async () => {
     return s.id
   `);
   const id = pass(a).value as number;
-  const before = cel(link, id)?.slice();
+  const before = Uint8Array.from(cel(link, id) ?? []);
   const b = await run(`
     const c = (await sprite()).cel("Layer 1")
     const first = c.read({ rect: [0, 0, 8, 8], palette: { r: "#ff0000" } })

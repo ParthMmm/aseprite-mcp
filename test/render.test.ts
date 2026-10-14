@@ -17,7 +17,7 @@ function crcOf(buf: Uint8Array) {
   for (const byte of buf) {
     crc ^= byte;
     for (let bit = 0; bit < 8; bit++) {
-      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+      crc = (crc >>> 1) ^ (0xed_b8_83_20 & -(crc & 1));
     }
   }
   return ~crc >>> 0;

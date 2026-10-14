@@ -13,12 +13,12 @@ export function createRuntime({ link, viewsDir }: RuntimeOptions) {
     async execute(code: string): Promise<Envelope> {
       if (code === "throw") {
         return {
-          ok: false,
-          error: { kind: "ExecutionFailure", message: "Error: boom" },
           commit: [],
           discarded: [],
+          error: { kind: "ExecutionFailure", message: "Error: boom" },
           images: [],
           ms: 0,
+          ok: false,
         };
       }
       const images: string[] = [];

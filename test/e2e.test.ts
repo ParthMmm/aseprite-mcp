@@ -89,7 +89,7 @@ test("status and stop talk to the daemon", async (t) => {
   const ctx = await isolatedEnv();
   t.after(() => ctx.cleanup());
   const run = (cmd: string) =>
-    spawnSync(process.execPath, [BIN, cmd], { encoding: "utf8", env: ctx.env });
+    spawnSync(process.execPath, [BIN, cmd], { encoding: "utf-8", env: ctx.env });
 
   assert.equal(run("status").status, 1, "status fails without a daemon");
   const daemon = serve(ctx.env);

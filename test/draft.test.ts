@@ -35,26 +35,26 @@ function snapshot({
 }: { colorMode?: ColorMode; palette?: string[] } = {}) {
   const reply = {
     cels: [
-      { layer: "bg", frame: 0, blob: 0, link: 0 },
-      { layer: "bg", frame: 1, blob: 0, link: 0 },
-      { layer: "fx/glow", frame: 0, blob: 1, link: null },
+      { blob: 0, frame: 0, layer: "bg", link: 0 },
+      { blob: 0, frame: 1, layer: "bg", link: 0 },
+      { blob: 1, frame: 0, layer: "fx/glow", link: null },
     ],
     frames: [{ duration: 0.1 }, { duration: 0.1 }],
     layers: [
       {
+        blend: "normal",
+        group: false,
+        opacity: 255,
         path: "bg",
         visible: true,
-        opacity: 255,
+      },
+      { blend: "normal", group: true, opacity: 255, path: "fx", visible: true },
+      {
         blend: "normal",
         group: false,
-      },
-      { path: "fx", visible: true, opacity: 255, blend: "normal", group: true },
-      {
+        opacity: 200,
         path: "fx/glow",
         visible: true,
-        opacity: 200,
-        blend: "normal",
-        group: false,
       },
     ],
     palette,
