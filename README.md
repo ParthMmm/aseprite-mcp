@@ -181,9 +181,14 @@ The program edits a private draft of the sprite. At commit, the daemon compares 
 
 ## Development
 
+The code is TypeScript that Node and Bun run directly; there is no build step for the server.
+
 ```sh
 npm install
-node --test
+npm test             # node --test
+npm run typecheck    # tsc, type check only
+npm run check        # Ultracite: oxlint and oxfmt
+npm run fix          # apply safe fixes, then rerun the tests
 ```
 
 `node --test` also runs `test/aseprite.test.ts`. It runs `test/aseprite-handlers.lua` in a real Aseprite in batch mode, and it skips when it cannot find the app. Set `ASEPRITE=/path/to/aseprite` to point to the binary.
