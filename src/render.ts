@@ -205,13 +205,13 @@ const shadePanel = (
 
 /**
  * Panels side by side for judging a sprite: colour, values (gray), silhouette, true size (1x), optionally deutan.
- * Without `scale`, a panel's longer side lands near 1024 px at most.
+ * Without `scale`, a panel's longer side lands near 200 px: big enough to judge, small enough to read cheaply.
  */
 export const critiqueSheet = (
   cv: Canvas,
   {
     panels = ["color", "gray", "silhouette", "1x"],
-    scale = defaultScale(cv.width, cv.height, 1024),
+    scale = defaultScale(cv.width, cv.height, 200),
   }: { panels?: CritiquePanel[]; scale?: number } = {}
 ): Rendered => {
   for (const p of panels) {
