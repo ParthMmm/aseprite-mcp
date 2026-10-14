@@ -104,6 +104,6 @@ test("status and stop talk to the daemon", async (t) => {
   const status = run("status");
   assert.equal(status.status, 0);
   assert.equal(JSON.parse(status.stdout).pid, daemon.child.pid);
-  assert.match(run("stop").stdout, /Stopped/);
+  assert.match(run("stop").stdout, /Stopped/u);
   assert.equal((await daemon.exited).code, 0);
 });

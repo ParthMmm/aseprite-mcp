@@ -93,12 +93,12 @@ test("unknown layers, group layers and missing frames throw program-facing error
   const d = snapshot();
   assert.throws(
     () => writable(d, "body", 0),
-    /Unknown layer 'body'. Layers: bg, fx, fx\/glow/
+    /Unknown layer 'body'. Layers: bg, fx, fx\/glow/u
   );
-  assert.throws(() => writable(d, "fx", 0), /'fx' is a group layer/);
+  assert.throws(() => writable(d, "fx", 0), /'fx' is a group layer/u);
   assert.throws(
     () => readable(d, "bg", 2),
-    /Frame 2 does not exist; the sprite has 2 frames \(0-1\)/
+    /Frame 2 does not exist; the sprite has 2 frames \(0-1\)/u
   );
 });
 
@@ -163,7 +163,7 @@ test("indexed: more than 256 colours fails with a clear message", () => {
     ),
   });
   writable(d, "bg", 0).set([1, 2, 3, 255], 0);
-  assert.throws(() => plan(d), /would need 257 colours \(max 256\)/);
+  assert.throws(() => plan(d), /would need 257 colours \(max 256\)/u);
 });
 
 test("setFrames copies each layer's last frame into new frames and sets durations", () => {
@@ -200,7 +200,7 @@ test("setFrames copies each layer's last frame into new frames and sets duration
 test("setFrames shrinks, takes durations, and a shrunk-then-grown frame keeps its snapshot base", () => {
   const d = snapshot();
   setFrames(d, 1, [0.25]);
-  assert.throws(() => readable(d, "bg", 1), /Frame 1 does not exist/);
+  assert.throws(() => readable(d, "bg", 1), /Frame 1 does not exist/u);
   assert.deepEqual(plan(d).ops, [
     { count: 1, durations: [0.25], op: "frames.set" },
   ]);
@@ -214,7 +214,7 @@ test("setFrames shrinks, takes durations, and a shrunk-then-grown frame keeps it
   );
   assert.throws(
     () => setFrames(d, 3, [0.1]),
-    /durations has 1 entries for 3 frames/
+    /durations has 1 entries for 3 frames/u
   );
 });
 
@@ -227,7 +227,7 @@ test("layer and tag staging become ordered struct ops", () => {
   stageLayer(d, "outline", { below: "magic/shine", visible: false });
   stageLayer(d, "top");
   stageTag(d, "walk", 0, 1, { direction: "pingpong" });
-  assert.throws(() => writable(d, "fx/glow", 0), /Unknown layer 'fx\/glow'/);
+  assert.throws(() => writable(d, "fx/glow", 0), /Unknown layer 'fx\/glow'/u);
   writable(d, "magic/shine", 0).set(R, 0);
   assert.deepEqual(
     d.structure.layers.map((l) => l.path),
@@ -259,7 +259,7 @@ test("removing a group removes its children once and drops their cels", () => {
   assert.deepEqual(p.writes, []);
   assert.throws(
     () => stageLayer(d, "nope", { remove: true }),
-    /Unknown layer 'nope'/
+    /Unknown layer 'nope'/u
   );
 });
 

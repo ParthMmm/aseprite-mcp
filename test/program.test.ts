@@ -182,7 +182,7 @@ test("a throwing program commits nothing and lists discarded cels", async () => 
     throw new Error("boom")
   `);
   const rBad = fail(r);
-  assert.match(rBad.error.message, /boom/);
+  assert.match(rBad.error.message, /boom/u);
   assert.deepEqual(r.commit, []);
   assert.deepEqual(rBad.discarded, [{ cels: 1, sprite: 1 }]);
   assert.equal(cel(link, 1), undefined);
@@ -252,22 +252,22 @@ test("program errors name what exists", async () => {
   const layerBad = fail(layer);
   assert.match(
     layerBad.error.message,
-    /Unknown layer 'Body'\. Layers: Layer 1\./
+    /Unknown layer 'Body'\. Layers: Layer 1\./u
   );
 
   const key = await run(
     `(await sprite()).cel("Layer 1").map({ a: "#fff" }, ["aa", "aX"])`
   );
-  assert.match(fail(key).error.message, /row 1 uses key "X".*keys: a/);
+  assert.match(fail(key).error.message, /row 1 uses key "X".*keys: a/u);
 
   const frame = await run(`(await sprite()).cel("Layer 1", 3)`);
   assert.match(
     fail(frame).error.message,
-    /Frame 3 does not exist; the sprite has 1 frame \(0-0\)/
+    /Frame 3 does not exist; the sprite has 1 frame \(0-0\)/u
   );
 
   const open = await run(`await sprite({ open: "/etc/passwd" })`);
-  assert.match(fail(open).error.message, /outside the allowed folders/);
+  assert.match(fail(open).error.message, /outside the allowed folders/u);
 });
 
 test("a symlink inside an allowed folder cannot reach outside it", async () => {
@@ -277,7 +277,7 @@ test("a symlink inside an allowed folder cannot reach outside it", async () => {
     `await sprite({ open: ${JSON.stringify(nodePath.join(dir, "hosts.aseprite"))} })`
   );
   const rBad = fail(r);
-  assert.match(rBad.error.message, /outside the allowed folders/);
+  assert.match(rBad.error.message, /outside the allowed folders/u);
 });
 
 test("changes() reports the artist's edits once", async () => {
@@ -314,5 +314,5 @@ test("DESCRIPTION stays under 5,500 characters and help topics resolve", () => {
   for (const t of ["maps", "animation", "critique", "conflicts", "files"]) {
     assert.ok(help(t).length > 200, t);
   }
-  assert.throws(() => help("nope"), /Topics: maps/);
+  assert.throws(() => help("nope"), /Topics: maps/u);
 });

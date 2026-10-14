@@ -218,7 +218,7 @@ test("an old extension connects but the status warns", () =>
     });
     assert.match(
       String(link.status().error),
-      /0\.0\.9\) is older than 0\.1\.0/
+      /0\.0\.9\) is older than 0\.1\.0/u
     );
     ws.close();
   }));
@@ -232,7 +232,7 @@ test("a busy port is a retrying status, then the link binds once the port frees"
     await sleep(150);
     assert.match(
       String(link.status().error),
-      new RegExp(`Port ${port} is busy`)
+      new RegExp(`Port ${port} is busy`, "u")
     );
     await new Promise((r) => blocker.close(r));
     await link.listening;

@@ -41,7 +41,7 @@ test("map with an unknown character throws and changes nothing", () => {
   const cv = R.blank(3, 1);
   assert.throws(
     () => R.map(cv, P, ["rzq"]),
-    /Characters not in palette: "z", "q"/
+    /Characters not in palette: "z", "q"/u
   );
   assert.deepEqual(show(cv), ["..."]);
 });
@@ -70,7 +70,7 @@ test("rect outline, fill and clipping", () => {
   assert.equal(R.rect(cv, [0, 0, 4, 3], "#000"), 10);
   assert.equal(R.rect(cv, [3, 2, 9, 9], "#f00", { fill: true }), 4);
   assert.deepEqual(show(cv), ["kkkk.", "k..k.", "kkkrr", "...rr"]);
-  assert.throws(() => R.rect(cv, [0, 0, 2] as never, "#000"), /rect must be/);
+  assert.throws(() => R.rect(cv, [0, 0, 2] as never, "#000"), /rect must be/u);
 });
 
 test("ellipse outline and fill have the pixel-art shape", () => {

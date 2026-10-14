@@ -136,7 +136,7 @@ test("renderView picks a scale near 512 px and refuses huge images", () => {
         { data: new Uint8Array(2048 * 2048 * 4), height: 2048, width: 2048 },
         { scale: 4 }
       ),
-    /smaller scale/
+    /smaller scale/u
   );
 });
 
@@ -176,7 +176,7 @@ test("critiqueSheet lays out colour, gray, silhouette and 1x panels", () => {
   assert.deepEqual(pixel(img, 35, 5), [0, 0, 255, 255], "1x panel");
   assert.throws(
     () => critiqueSheet(cv, { panels: ["sepia"] as never }),
-    /Unknown critique panel/
+    /Unknown critique panel/u
   );
 });
 
