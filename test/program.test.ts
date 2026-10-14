@@ -6,7 +6,23 @@ import { test } from "node:test";
 
 import { help } from "../src/help.ts";
 import { createRuntime, DESCRIPTION } from "../src/program.ts";
+import type {
+  ExecuteFailure,
+  ExecuteResult,
+  ExecuteSuccess,
+} from "../src/program.ts";
 import { createFakeLink, pixel } from "./fake-link.ts";
+import type { FakeLink } from "./fake-link.ts";
+
+function pass(r: ExecuteResult): ExecuteSuccess {
+  assert.equal(r.ok, true, JSON.stringify(r.ok ? null : r.error));
+  return r as ExecuteSuccess;
+}
+
+function fail(r: ExecuteResult): ExecuteFailure {
+  assert.equal(r.ok, false);
+  return r as ExecuteFailure;
+}
 
 async function setup() {
   const dir = await mkdtemp(join(tmpdir(), "aseprite-mcp-program-"));
@@ -17,12 +33,13 @@ async function setup() {
     palettesFile: join(dir, "palettes.json"),
     viewsDir: join(dir, "views"),
   });
-  return { dir, link, run: (code) => runtime.execute(code) };
+  return { dir, link, run: (code: string) => runtime.execute(code) };
 }
 
-const cel = (link, id, layer = "Layer 1", frame = 0) =>
+const cel = (link: FakeLink, id: number, layer = "Layer 1", frame = 0) =>
   link.sprite(id).state.cels.get(`${layer}@${frame}`);
-const opaque = (bytes) => {
+const opaque = (bytes: Uint8Array | undefined) => {
+  assert.ok(bytes, "cel exists");
   let n = 0;
   for (let i = 3; i < bytes.length; i += 4) {
     if (bytes[i]) n++;
@@ -44,16 +61,16 @@ test("48x48 map + outline + critique view writes a PNG and commits once", async 
     const v = await s.view({ critique: true })
     return { edge, v, layers: s.layers() }
   `);
-  assert.equal(r.ok, true, JSON.stringify(r.error));
+  const rOk = pass(r);
   assert.equal(r.images.length, 1);
-  assert.equal(r.value.v.path, r.images[0]);
+  assert.equal((rOk.value as { v: { path: string } }).v.path, r.images[0]);
   const png = await readFile(r.images[0]);
   assert.deepEqual(
     [...png.subarray(1, 4)],
     [0x50, 0x4e, 0x47],
     "PNG signature"
   );
-  assert.ok(r.value.edge > 0, "outline drew pixels");
+  assert.ok((rOk.value as { edge: number }).edge > 0, "outline drew pixels");
   assert.equal(r.commit.length, 1);
   assert.deepEqual(
     {
@@ -82,7 +99,7 @@ test("12-frame animation commits one undo step; undo restores one frame", async 
     const strip = await s.view({ frame: "all", scale: 1 })
     return { frames: s.frames(), moved, strip }
   `);
-  assert.equal(r.ok, true, JSON.stringify(r.error));
+  const rOk = pass(r);
   assert.equal(r.commit.length, 1);
   assert.equal(r.commit[0].cels, 12);
   const id = r.commit[0].sprite;
@@ -99,13 +116,16 @@ test("12-frame animation commits one undo step; undo restores one frame", async 
     "frame 3 shifted 3 px right"
   );
   assert.deepEqual(pixel(cel(link, id, "Layer 1", 3), 16, 2, 2), [0, 0, 0, 0]);
-  assert.equal(r.value.strip.width, 12 * 16 + 11);
+  assert.equal(
+    (rOk.value as { strip: { width: number } }).strip.width,
+    12 * 16 + 11
+  );
 
   const u = await run(
     `const s = await sprite(); await s.undo(); return s.frames()`
   );
-  assert.equal(u.ok, true, JSON.stringify(u.error));
-  assert.equal(u.value, 1);
+  const uOk = pass(u);
+  assert.equal(uOk.value, 1);
   assert.deepEqual(u.commit, []);
 });
 
@@ -116,8 +136,8 @@ test("read -> recolor -> map round trip", async () => {
     s.cel("Layer 1").map({ r: "#ff0000", b: "#0000ff" }, ["rrb", ".br", "r.r"], { x: 1, y: 1 })
     return s.id
   `);
-  const id = a.value;
-  const before = cel(link, id).slice();
+  const id = pass(a).value as number;
+  const before = cel(link, id)?.slice();
   const b = await run(`
     const c = (await sprite()).cel("Layer 1")
     const first = c.read({ rect: [0, 0, 8, 8], palette: { r: "#ff0000" } })
@@ -127,8 +147,8 @@ test("read -> recolor -> map round trip", async () => {
     c.map(first.palette, first.rows)
     return { first, changed, green: green.rows }
   `);
-  assert.equal(b.ok, true, JSON.stringify(b.error));
-  assert.deepEqual(b.value.first.rows, [
+  const bOk = pass(b);
+  assert.deepEqual((bOk.value as { first: { rows: string[] } }).first.rows, [
     "",
     ".rra",
     "..ar",
@@ -138,8 +158,8 @@ test("read -> recolor -> map round trip", async () => {
     "",
     "",
   ]);
-  assert.equal(b.value.changed, 5);
-  assert.deepEqual(b.value.green.slice(1, 4), [".gga", "..ag", ".g.g"]);
+  assert.equal((bOk.value as { changed: number }).changed, 5);
+  assert.deepEqual((bOk.value as { green: string[] }).green.slice(1, 4), [".gga", "..ag", ".g.g"]);
   assert.deepEqual(
     b.commit,
     [],
@@ -155,10 +175,10 @@ test("a throwing program commits nothing and lists discarded cels", async () => 
     s.cel("Layer 1").px([[1, 1, "#ffffff"]])
     throw new Error("boom")
   `);
-  assert.equal(r.ok, false);
-  assert.match(r.error.message, /boom/);
+  const rBad = fail(r);
+  assert.match(rBad.error.message, /boom/);
   assert.deepEqual(r.commit, []);
-  assert.deepEqual(r.discarded, [{ cels: 1, sprite: 1 }]);
+  assert.deepEqual(rBad.discarded, [{ cels: 1, sprite: 1 }]);
   assert.equal(cel(link, 1), undefined);
   assert.equal(link.sprite(1).undo.length, 0);
 });
@@ -182,7 +202,7 @@ test("an artist edit between snapshot and commit merges and reports lost pixels"
   const r = await run(
     `(await sprite()).cel("Layer 1").px([[0, 0, "#00ff00"], [1, 0, "#00ff00"]])`
   );
-  assert.equal(r.ok, true, JSON.stringify(r.error));
+  const rOk = pass(r);
   assert.equal(r.commit.length, 1);
   assert.equal(r.commit[0].merged, 1);
   assert.equal(r.commit[0].lost, 1);
@@ -209,12 +229,12 @@ test("s.commit() checkpoint survives a later throw", async () => {
     s.cel("Layer 1").px([[1, 0, "#ff0000"]])
     throw new Error("later")
   `);
-  assert.equal(r.ok, false);
+  const rBad = fail(r);
   assert.deepEqual(
     r.commit.map((c) => [c.label, c.pixels]),
     [["first", 1]]
   );
-  assert.deepEqual(r.discarded, [{ cels: 1, sprite: 1 }]);
+  assert.deepEqual(rBad.discarded, [{ cels: 1, sprite: 1 }]);
   assert.deepEqual(pixel(cel(link, 1), 8, 0, 0), [255, 0, 0, 255]);
   assert.deepEqual(pixel(cel(link, 1), 8, 1, 0), [0, 0, 0, 0]);
   assert.equal(link.sprite(1).undo.length, 1);
@@ -223,22 +243,22 @@ test("s.commit() checkpoint survives a later throw", async () => {
 test("program errors name what exists", async () => {
   const { run } = await setup();
   const layer = await run(`(await sprite({ new: [4, 4] })).cel("Body")`);
-  assert.equal(layer.ok, false);
-  assert.match(layer.error.message, /Unknown layer 'Body'\. Layers: Layer 1\./);
+  const layerBad = fail(layer);
+  assert.match(layerBad.error.message, /Unknown layer 'Body'\. Layers: Layer 1\./);
 
   const key = await run(
     `(await sprite()).cel("Layer 1").map({ a: "#fff" }, ["aa", "aX"])`
   );
-  assert.match(key.error.message, /row 1 uses key "X".*keys: a/);
+  assert.match(fail(key).error.message, /row 1 uses key "X".*keys: a/);
 
   const frame = await run(`(await sprite()).cel("Layer 1", 3)`);
   assert.match(
-    frame.error.message,
+    fail(frame).error.message,
     /Frame 3 does not exist; the sprite has 1 frame \(0-0\)/
   );
 
   const open = await run(`await sprite({ open: "/etc/passwd" })`);
-  assert.match(open.error.message, /outside the allowed folders/);
+  assert.match(fail(open).error.message, /outside the allowed folders/);
 });
 
 test("a symlink inside an allowed folder cannot reach outside it", async () => {
@@ -247,8 +267,8 @@ test("a symlink inside an allowed folder cannot reach outside it", async () => {
   const r = await run(
     `await sprite({ open: ${JSON.stringify(join(dir, "hosts.aseprite"))} })`
   );
-  assert.equal(r.ok, false);
-  assert.match(r.error.message, /outside the allowed folders/);
+  const rBad = fail(r);
+  assert.match(rBad.error.message, /outside the allowed folders/);
 });
 
 test("changes() reports the artist's edits once", async () => {
@@ -262,8 +282,8 @@ test("changes() reports the artist's edits once", async () => {
   const r = await run(
     `const s = await sprite(); return [await s.changes(), await s.changes()]`
   );
-  assert.equal(r.ok, true, JSON.stringify(r.error));
-  assert.deepEqual(r.value, [
+  const rOk = pass(r);
+  assert.deepEqual(rOk.value, [
     [
       {
         frame: 0,

@@ -15,7 +15,7 @@ import {
   waitForHealth,
 } from "./fixtures/daemon-env.ts";
 
-async function proxyClient(env) {
+async function proxyClient(env: Record<string, string>) {
   const client = new Client({ name: "e2e", version: "0" });
   await client.connect(
     new StdioClientTransport({
@@ -48,8 +48,8 @@ test("the stdio proxy starts a daemon, lists the one tool and inlines views", as
     arguments: { code: "view" },
     name: "execute",
   });
-  const [text, image] = res.content;
-  const envelope = JSON.parse(text.text);
+  const [text, image] = (res as { content: { text: string }[] }).content;
+  const envelope = JSON.parse(text?.text ?? "");
   assert.equal(envelope.ok, true);
   assert.deepEqual(image, {
     data: readFileSync(envelope.images[0]).toString("base64"),
@@ -77,7 +77,7 @@ test("the proxy reuses a running daemon instead of starting another", async (t) 
     arguments: { code: "1" },
     name: "execute",
   });
-  assert.deepEqual(JSON.parse(res.content[0].text).value, {
+  assert.deepEqual(JSON.parse((res as { content: { text: string }[] }).content[0]?.text ?? "").value, {
     code: "1",
     connected: false,
   });
@@ -88,7 +88,7 @@ test("the proxy reuses a running daemon instead of starting another", async (t) 
 test("status and stop talk to the daemon", async (t) => {
   const ctx = await isolatedEnv();
   t.after(() => ctx.cleanup());
-  const run = (cmd) =>
+  const run = (cmd: string) =>
     spawnSync(process.execPath, [BIN, cmd], { encoding: "utf8", env: ctx.env });
 
   assert.equal(run("status").status, 1, "status fails without a daemon");

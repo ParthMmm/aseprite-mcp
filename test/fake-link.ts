@@ -1,7 +1,71 @@
 // In-memory Aseprite behind the Link interface: RGB sprites only, full-canvas cel bytes, one undo step per
 // applied commit, compare-and-swap per written cel. Enough for program.test.ts; the real Lua is in extension/.
+import type { Layer, Op, Tag } from "../src/draft.ts";
+import type { Link, LinkReply, LinkStatus } from "../src/link.ts";
+import type { Rect } from "../src/raster.ts";
+import type { ColorMode } from "../src/wire.ts";
 
-const clone = (s) => ({
+interface FakeLayer {
+  path: string;
+  visible: boolean;
+  opacity: number;
+  blend: string;
+  group: boolean;
+}
+
+interface State {
+  id: number;
+  name: string;
+  path: string | null;
+  width: number;
+  height: number;
+  colorMode: ColorMode;
+  transparentIndex: number;
+  palette: string[];
+  selection: Rect | null;
+  layers: FakeLayer[];
+  frames: { duration: number }[];
+  tags: Tag[];
+  cels: Map<string, Uint8Array>;
+}
+
+interface Step {
+  label: string;
+  state: State;
+}
+
+interface Entry {
+  state: State;
+  undo: Step[];
+  redo: Step[];
+}
+
+/** A cel write as it travels on the wire: base and next index the blob list, null means no cel. */
+interface WireWrite {
+  layer: string;
+  frame: number;
+  base: number | null;
+  next: number | null;
+}
+
+interface Reply {
+  result: unknown;
+  blobs?: Uint8Array[];
+}
+
+export interface FakeLink extends Link {
+  artist: (
+    id: number,
+    layer: string,
+    frame: number,
+    fn: (bytes: Uint8Array, width: number) => void
+  ) => void;
+  beforeRequest: ((cmd: string, args: object) => unknown) | null;
+  log: string[];
+  sprite: (id: number) => Entry;
+}
+
+const clone = (s: State): State => ({
   ...s,
   cels: new Map([...s.cels].map(([k, v]) => [k, v.slice()])),
   frames: s.frames.map((f) => ({ ...f })),
@@ -9,24 +73,32 @@ const clone = (s) => ({
   palette: [...s.palette],
   tags: s.tags.map((t) => ({ ...t })),
 });
-const key = (layer, frame) => `${layer}@${frame}`;
-const within = (path, root) => path === root || path.startsWith(`${root}/`);
-const equal = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const key = (layer: string, frame: number): string => `${layer}@${frame}`;
+const within = (path: string, root: string): boolean => path === root || path.startsWith(`${root}/`);
+const equal = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 class StructureError extends Error {}
 
-export function createFakeLink() {
-  const sprites = new Map();
+export function createFakeLink(): FakeLink {
+  const sprites = new Map<number, Entry>();
   let nextId = 1;
-  let active = null;
-  const log = [];
+  let active: number | null = null;
+  const log: string[] = [];
 
-  const need = (ref) => {
+  const byId = (id: number): Entry => {
+    const found = sprites.get(id);
+    if (!found) {
+      throw new Error(`No open sprite '${id}'.`);
+    }
+    return found;
+  };
+
+  const need = (ref?: number | string | null): Entry => {
     if (ref === undefined || ref === null) {
       if (active === null) {
         throw new Error("No active sprite.");
       }
-      return sprites.get(active);
+      return byId(active);
     }
     const found = [...sprites.values()].find(
       (e) => e.state.id === ref || e.state.name === ref
@@ -37,8 +109,8 @@ export function createFakeLink() {
     return found;
   };
 
-  function applyOp(s, op) {
-    const find = (path) => {
+  function applyOp(s: State, op: Op) {
+    const find = (path: string): FakeLayer => {
       const l = s.layers.find((x) => x.path === path);
       if (!l) {
         throw new StructureError(`layer '${path}' does not exist`);
@@ -126,13 +198,26 @@ export function createFakeLink() {
         return;
       }
       default: {
-        throw new Error(`unknown op ${op.op}`);
+        throw new Error(`unknown op ${(op as { op: string }).op}`);
       }
     }
   }
 
   const handlers = {
-    commit({ sprite, label, ops, writes }, blobs) {
+    commit(
+      {
+        sprite,
+        label,
+        ops,
+        writes,
+      }: {
+        sprite?: number | string;
+        label: string;
+        ops: Op[];
+        writes: WireWrite[];
+      },
+      blobs: Uint8Array[]
+    ): Reply {
       const entry = need(sprite);
       const next = clone(entry.state);
       try {
@@ -156,8 +241,8 @@ export function createFakeLink() {
         throw err;
       }
       const blank = new Uint8Array(next.width * next.height * 4);
-      const conflicts = [];
-      const current = [];
+      const conflicts: { write: number; blob?: number }[] = [];
+      const current: Uint8Array[] = [];
       writes.forEach((w, i) => {
         const cur = next.cels.get(key(w.layer, w.frame)) ?? null;
         const base = w.base === null ? null : blobs[w.base];
@@ -182,7 +267,13 @@ export function createFakeLink() {
       entry.state = next;
       return { result: { applied: true, label, cels: writes.length } };
     },
-    history({ action, steps = 1 }) {
+    history({
+      action,
+      steps = 1,
+    }: {
+      action: "undo" | "redo";
+      steps?: number;
+    }): Reply {
       const entry = need();
       for (let i = 0; i < steps; i++) {
         const [from, to] =
@@ -196,11 +287,19 @@ export function createFakeLink() {
       }
       return { result: { done: action, steps } };
     },
-    new_sprite({ width, height, colorMode = "rgb" }) {
+    new_sprite({
+      width,
+      height,
+      colorMode = "rgb",
+    }: {
+      width: number;
+      height: number;
+      colorMode?: ColorMode;
+    }): Reply {
       if (colorMode !== "rgb") throw new Error("fake link: rgb sprites only");
       const id = nextId;
       nextId += 1;
-      const state = {
+      const state: State = {
         id,
         name: `Sprite-${id}`,
         path: null,
@@ -229,10 +328,10 @@ export function createFakeLink() {
         result: { sprite: true, spriteId: id, name: state.name, width, height },
       };
     },
-    open({ path }) {
+    open({ path }: { path: string }): Reply {
       throw new Error(`File not found: ${path}`);
     },
-    save({ path }) {
+    save({ path }: { path?: string }): Reply {
       const { state } = need();
       const saved = path ?? state.path;
       if (!saved)
@@ -240,7 +339,7 @@ export function createFakeLink() {
       state.path = saved;
       return { result: { saved, copy: false } };
     },
-    snapshot({ sprite }) {
+    snapshot({ sprite }: { sprite?: number | string }): Reply {
       const { state: s } = need(sprite);
       const blobs = [];
       const cels = [];
@@ -273,7 +372,7 @@ export function createFakeLink() {
       };
       return { result, blobs };
     },
-    sprites({ select } = {}) {
+    sprites({ select }: { select?: number | string } = {}): Reply {
       if (select !== undefined) active = need(select).state.id;
       const list = [...sprites.values()].map(({ state: s }) => ({
         id: s.id,
@@ -287,10 +386,10 @@ export function createFakeLink() {
     },
   };
 
-  const link = {
+  const link: FakeLink = {
     /** An artist edit outside any program: changes the cel and records its own undo step. */
     artist(id, layer, frame, fn) {
-      const entry = sprites.get(id);
+      const entry = byId(id);
       const next = clone(entry.state);
       const k = key(layer, frame);
       const bytes =
@@ -304,16 +403,26 @@ export function createFakeLink() {
     beforeRequest: null,
     /** test helpers */
     log,
-    async request(cmd, args = {}, blobs = []) {
+    async request<T = unknown>(
+      cmd: string,
+      args: object = {},
+      blobs: Uint8Array[] = []
+    ): Promise<LinkReply<T>> {
       log.push(cmd);
       if (link.beforeRequest) await link.beforeRequest(cmd, args);
-      const h = handlers[cmd];
-      if (!h) throw new Error(`Unknown command '${cmd}'.`);
-      const { result, blobs: out = [] } = h(structuredClone(args), blobs);
-      return { result, blobs: out };
+      if (!Object.hasOwn(handlers, cmd)) throw new Error(`Unknown command '${cmd}'.`);
+      const h = handlers[cmd as keyof typeof handlers] as (
+        a: never,
+        b: Uint8Array[]
+      ) => Reply;
+      const { result, blobs: out = [] } = h(
+        structuredClone(args) as never,
+        blobs
+      );
+      return { result: result as T, blobs: out };
     },
-    sprite: (id) => sprites.get(id),
-    status: () => ({
+    sprite: byId,
+    status: (): LinkStatus => ({
       connected: true,
       extension: "0.1.0",
       port: 9123,
@@ -324,10 +433,15 @@ export function createFakeLink() {
 }
 
 /** RGBA of pixel (x, y) in a full-canvas buffer, or null when the cel does not exist. */
-export function pixel(bytes, width, x, y) {
+export function pixel(
+  bytes: Uint8Array | null | undefined,
+  width: number,
+  x: number,
+  y: number
+): [number, number, number, number] | null {
   if (!bytes) {
     return null;
   }
   const i = (y * width + x) * 4;
-  return [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]];
+  return [bytes[i] ?? 0, bytes[i + 1] ?? 0, bytes[i + 2] ?? 0, bytes[i + 3] ?? 0];
 }

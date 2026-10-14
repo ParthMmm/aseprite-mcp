@@ -13,20 +13,26 @@ import {
   resolveConflict,
   rebase,
 } from "../src/draft.ts";
+import type { ColorMode } from "../src/wire.ts";
 
 const T = [0, 0, 0, 0];
 const R = [255, 0, 0, 255];
 const G = [0, 255, 0, 255];
 const B = [0, 0, 255, 255];
 const K = [0, 0, 0, 255];
-const cel = (...pixels) => new Uint8Array(pixels.flat());
-const pixels = (buf) =>
-  Array.from({ length: buf.length / 4 }, (_, i) => [
+const cel = (...pixels: number[][]) => new Uint8Array(pixels.flat());
+const pixels = (buf: Uint8Array | null) => {
+  assert.ok(buf, "cel bytes exist");
+  return Array.from({ length: buf.length / 4 }, (_, i) => [
     ...buf.subarray(i * 4, i * 4 + 4),
   ]);
+};
 
 /** 2x1 sprite: layers bg, fx (group), fx/glow; 2 frames; bg@0 and bg@1 linked; fx/glow@0. */
-function snapshot({ colorMode = "rgb", palette = ["#00000000"] } = {}) {
+function snapshot({
+  colorMode = "rgb",
+  palette = ["#00000000"],
+}: { colorMode?: ColorMode; palette?: string[] } = {}) {
   const reply = {
     cels: [
       { layer: "bg", frame: 0, blob: 0, link: 0 },
@@ -313,7 +319,7 @@ test("rebase makes the next plan empty, and a second rebase changes nothing", ()
   rebase(d, second);
   assert.deepEqual(plan(d).writes, []);
   assert.deepEqual(pixels(readable(d, "bg", 0)), [R, B]);
-  assert.equal(d.cels.get("fx/g@0").base, null);
+  assert.equal(d.cels.get("fx/g@0")?.base, null);
 });
 
 test("edits made after plan stay dirty through rebase", () => {

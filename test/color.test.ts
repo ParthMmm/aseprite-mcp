@@ -39,7 +39,7 @@ test("ramp keeps the base in the middle and runs dark to light", () => {
   assert.deepEqual(Object.keys(p), ["a", "b", "c", "d", "e"]);
   assert.equal(p.c, "#b13e53");
   const L = Object.values(p).map(
-    (c) => rgbToOklch(...parseHex(c).slice(0, 3))[0]
+    (c) => rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[0]
   );
   for (let i = 1; i < L.length; i++) {
     assert.ok(L[i] > L[i - 1], `L rises at ${i}: ${L}`);
@@ -47,7 +47,8 @@ test("ramp keeps the base in the middle and runs dark to light", () => {
 });
 
 test("hueShift 0 keeps the hue; a larger shift moves the shadow further", () => {
-  const hue = (c) => rgbToOklch(...parseHex(c).slice(0, 3))[2];
+  const hue = (c: string) =>
+    rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[2];
   const base = hue("#38b764");
   const flat = ramp("#38b764", "abc", { hueShift: 0 });
   assert.ok(Math.abs(hue(flat.a) - base) < 1);

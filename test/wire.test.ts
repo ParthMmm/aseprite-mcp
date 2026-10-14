@@ -47,7 +47,7 @@ test("round trip with zero blobs, empty blobs and a multi-MB blob", () => {
 
 test("decodeFrame rejects bad magic, version, flags and lengths", () => {
   const good = encodeFrame({ id: 1 }, [new Uint8Array([1, 2])]);
-  const with_ = (i, v) => {
+  const with_ = (i: number, v: number) => {
     const b = Buffer.from(good);
     b[i] = v;
     return b;
@@ -119,7 +119,7 @@ test("rgb passes through as a copy; bad sizes and modes throw", () => {
     /not a whole number of gray pixels/
   );
   assert.throws(
-    () => fromRgba(new Uint8Array(4), "cmyk", [], 0),
+    () => fromRgba(new Uint8Array(4), "cmyk" as never, [], 0),
     /Unknown colour mode/
   );
 });

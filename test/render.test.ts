@@ -12,7 +12,7 @@ import {
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-function crcOf(buf) {
+function crcOf(buf: Uint8Array) {
   let crc = ~0;
   for (const byte of buf) {
     crc ^= byte;
@@ -24,7 +24,7 @@ function crcOf(buf) {
 }
 
 /** Minimal decoder for the PNGs encodePng writes: checks every chunk CRC and returns RGBA. */
-function decodePng(png) {
+function decodePng(png: Buffer) {
   assert.deepEqual([...png.subarray(0, 8)], SIGNATURE);
   const chunks = [];
   for (let o = 8; o < png.length;) {
@@ -63,7 +63,11 @@ function decodePng(png) {
   }
   return { data, height, width };
 }
-const pixel = (img, x, y) => [
+const pixel = (
+  img: { data: Uint8Array; width: number },
+  x: number,
+  y: number
+) => [
   ...img.data.subarray((y * img.width + x) * 4, (y * img.width + x) * 4 + 4),
 ];
 
@@ -171,7 +175,7 @@ test("critiqueSheet lays out colour, gray, silhouette and 1x panels", () => {
   assert.deepEqual(pixel(img, 34, 4), [255, 0, 0, 255], "1x panel");
   assert.deepEqual(pixel(img, 35, 5), [0, 0, 255, 255], "1x panel");
   assert.throws(
-    () => critiqueSheet(cv, { panels: ["sepia"] }),
+    () => critiqueSheet(cv, { panels: ["sepia"] as never }),
     /Unknown critique panel/
   );
 });

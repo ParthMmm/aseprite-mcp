@@ -1,36 +1,59 @@
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 // src/link.ts against a real ws client that plays the Aseprite extension.
 import { test } from "node:test";
 
-import WebSocket from "ws";
+import { WebSocket } from "ws";
 
 import { createLink, NOT_CONNECTED } from "../src/link.ts";
+import type { LinkOptions, LinkServer } from "../src/link.ts";
 import { PROTOCOL, encodeFrame, decodeFrame } from "../src/wire.ts";
+import type { WireMessage } from "../src/wire.ts";
 
+// src/ws.d.ts declares no client constructor, so the test supplies the one signature it uses.
+const Client = WebSocket as unknown as new (url: string) => WebSocket;
 const TOKEN = "a".repeat(48);
-function hmac(token, text) {
+function hmac(token: string, text: string) {
   return createHmac("sha256", token).update(text).digest("hex");
 }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) =>
+  new Promise<void>((r) => {
+    setTimeout(r, ms);
+  });
+
+interface ExtensionReply {
+  result?: unknown;
+  blobs?: Uint8Array[];
+  error?: string;
+}
+
+interface ExtensionOptions {
+  token?: string;
+  extension?: string;
+  onRequest?: (
+    msg: WireMessage,
+    blobs: Uint8Array[]
+  ) => ExtensionReply | undefined | void;
+}
 
 // Connects and pairs like plugin.lua. `onRequest(msg, blobs)` returns `{ result, blobs? }` or `{ error }` or undefined (no reply).
 async function fakeExtension(
-  port,
+  port: number,
   {
     token = TOKEN,
     extension = "0.1.0",
     onRequest = () => ({ result: {} }),
-  } = {}
+  }: ExtensionOptions = {}
 ) {
   const url = `ws://127.0.0.1:${port}`;
-  const ws = new WebSocket(url);
+  const ws = new Client(url);
   const clientNonce = randomBytes(16).toString("hex");
-  let serverNonce;
-  const outcome = new Promise((resolve, reject) => {
+  let serverNonce = "";
+  const outcome = new Promise<string>((resolve, reject) => {
     ws.on("error", reject);
-    ws.on("message", (data, isBinary) => {
+    ws.on("message", (data: Buffer, isBinary: boolean) => {
       if (isBinary) {
         const { msg, blobs } = decodeFrame(data);
         return reply(msg, blobs);
@@ -38,7 +61,7 @@ async function fakeExtension(
       const msg = JSON.parse(data.toString());
       const kind = msg.type;
       if (kind === "challenge") {
-        serverNonce = msg.nonce;
+        serverNonce = String(msg.nonce);
         ws.send(
           JSON.stringify({
             extension,
@@ -63,7 +86,7 @@ async function fakeExtension(
       }
     });
   });
-  function reply(msg, blobs) {
+  function reply(msg: WireMessage, blobs: Uint8Array[]) {
     const out = onRequest(msg, blobs);
     if (!out) {
       return;
@@ -78,7 +101,10 @@ async function fakeExtension(
   return { outcome: await outcome, ws };
 }
 
-async function withLink(opts, fn) {
+async function withLink(
+  opts: Partial<LinkOptions>,
+  fn: (link: LinkServer) => Promise<void>
+) {
   const link = createLink({ port: 0, token: TOKEN, ...opts });
   await link.listening;
   try {
@@ -90,11 +116,11 @@ async function withLink(opts, fn) {
 
 test("pairs with the HMAC handshake and answers TEXT requests", () =>
   withLink({}, async (link) => {
-    const seen = [];
+    const seen: { binary: boolean; msg: WireMessage }[] = [];
     const { ws, outcome } = await fakeExtension(link.status().port, {
       onRequest: (msg, blobs) => (
         seen.push({ binary: blobs.length > 0, msg }),
-        { result: { echo: msg.args.n } }
+        { result: { echo: (msg.args as { n: number }).n } }
       ),
     });
     assert.equal(outcome, "welcome");
@@ -190,18 +216,18 @@ test("an old extension connects but the status warns", () =>
     const { ws } = await fakeExtension(link.status().port, {
       extension: "0.0.9",
     });
-    assert.match(link.status().error, /0\.0\.9\) is older than 0\.1\.0/);
+    assert.match(String(link.status().error), /0\.0\.9\) is older than 0\.1\.0/);
     ws.close();
   }));
 
 test("a busy port is a retrying status, then the link binds once the port frees", async () => {
   const blocker = createServer();
-  await new Promise((r) => blocker.listen(0, "127.0.0.1", r));
-  const { port } = blocker.address();
+  await new Promise<void>((r) => blocker.listen(0, "127.0.0.1", r));
+  const { port } = blocker.address() as AddressInfo;
   const link = createLink({ port, retryMs: 100, token: TOKEN });
   try {
     await sleep(150);
-    assert.match(link.status().error, new RegExp(`Port ${port} is busy`));
+    assert.match(String(link.status().error), new RegExp(`Port ${port} is busy`));
     await new Promise((r) => blocker.close(r));
     await link.listening;
     assert.equal(link.status().error, null);

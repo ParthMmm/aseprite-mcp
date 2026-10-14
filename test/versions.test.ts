@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { MIN_EXTENSION } from "../src/link.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const json = (path) => JSON.parse(readFileSync(join(root, path), "utf-8"));
-const parts = (v) => v.split(".").map(Number);
-const atLeast = (a, b) => {
+const json = (path: string) => JSON.parse(readFileSync(join(root, path), "utf-8"));
+const parts = (v: string) => v.split(".").map(Number);
+const atLeast = (a: string, b: string) => {
   const [x, y] = [parts(a), parts(b)];
   for (let i = 0; i < 3; i++) {
     if (x[i] !== y[i]) return x[i] > y[i];

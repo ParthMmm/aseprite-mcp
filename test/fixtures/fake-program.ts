@@ -3,13 +3,14 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { Envelope, RuntimeOptions } from "../../src/daemon.ts";
 import { encodePng } from "../../src/render.ts";
 
 export const DESCRIPTION = "FAKE execute: test runtime";
 
-export function createRuntime({ link, viewsDir }) {
+export function createRuntime({ link, viewsDir }: RuntimeOptions) {
   return {
-    async execute(code) {
+    async execute(code: string): Promise<Envelope> {
       if (code === "throw") {
         return {
           ok: false,
@@ -20,7 +21,7 @@ export function createRuntime({ link, viewsDir }) {
           ms: 0,
         };
       }
-      const images = [];
+      const images: string[] = [];
       if (code === "view") {
         const path = join(viewsDir, `fake-${process.pid}-${Date.now()}.png`);
         await writeFile(path, encodePng(1, 1, Uint8Array.of(255, 0, 0, 255)));

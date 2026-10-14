@@ -21,7 +21,12 @@ const ASEPRITE =
   process.env.ASEPRITE ?? "/Applications/Aseprite.app/Contents/MacOS/aseprite";
 const skip = existsSync(ASEPRITE) ? false : `Aseprite not found at ${ASEPRITE}`;
 
-function runAseprite() {
+interface LuaResult {
+  cases: { name: string; ok: boolean; error?: string }[];
+  [key: string]: unknown;
+}
+
+function runAseprite(): { dir: string; result: LuaResult } {
   const dir = mkdtempSync(join(tmpdir(), "aseprite-mcp-lua-"));
   const out = join(dir, "result.json");
   writeFileSync(
@@ -54,15 +59,19 @@ function runAseprite() {
 }
 
 describe("extension handlers in Aseprite", { skip }, () => {
-  const { dir, result } = skip ? { result: { cases: [] } } : runAseprite();
-  after(() => dir && rmSync(dir, { force: true, recursive: true }));
+  const { dir, result } = skip ? { dir: "", result: { cases: [] } as LuaResult } : runAseprite();
+  after(() => {
+    if (dir) {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
 
   for (const c of result.cases) {
-    test(c.name, () => assert.ok(c.ok, c.error));
+    test(c.name, () => assert.ok(c.ok, c.error ?? "case failed"));
   }
 
   test("SHA-256 matches node:crypto", () => {
-    const sha = (s) => createHash("sha256").update(s).digest("hex");
+    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
     assert.deepEqual(result.sha, {
       abc: sha("abc"),
       empty: sha(""),

@@ -5,18 +5,31 @@ import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 
 import { createBackups } from "../src/files.ts";
+import type { Link } from "../src/link.ts";
 
-function recordingLink() {
-  const calls = [];
+interface Call {
+  args: { sprite?: number; path: string };
+  cmd: string;
+}
+
+function recordingLink(): Link & { calls: Call[] } {
+  const calls: Call[] = [];
   return {
     calls,
-    async request(cmd, args) {
-      calls.push({ args, cmd });
+    async request<T = unknown>(cmd: string, args: object = {}) {
+      const call = { args, cmd } as Call;
+      calls.push(call);
       if (cmd === "backup") {
-        writeFileSync(args.path, "copy");
+        writeFileSync(call.args.path, "copy");
       }
-      return { blobs: [], result: {} };
+      return { blobs: [], result: {} as T };
     },
+    status: () => ({
+      connected: true,
+      error: null,
+      extension: "0.1.0",
+      port: 0,
+    }),
   };
 }
 

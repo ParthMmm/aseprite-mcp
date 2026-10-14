@@ -17,8 +17,17 @@ import {
 const VERSION = JSON.parse(
   readFileSync(`${root}/package.json`, "utf-8")
 ).version;
-let ctx;
-let daemon;
+let ctx: Awaited<ReturnType<typeof isolatedEnv>>;
+let daemon: ReturnType<typeof serve>;
+
+interface Block {
+  type: string;
+  text: string;
+  data?: string;
+  mimeType?: string;
+}
+// The SDK types a tool result as unknown content; this suite always gets an array of blocks.
+const blocks = (res: unknown) => (res as { content: Block[] }).content;
 
 before(async () => {
   ctx = await isolatedEnv();
@@ -36,8 +45,8 @@ async function connect(query = "") {
 }
 
 // Raw request so the test controls the Host header (fetch does not allow overriding it).
-function rawGet(path, headers) {
-  return new Promise((done, fail) => {
+function rawGet(path: string, headers: Record<string, string>) {
+  return new Promise<number | undefined>((done, fail) => {
     const req = request(
       { headers, host: "127.0.0.1", path, port: ctx.httpPort },
       (res) => {
@@ -88,8 +97,8 @@ test("execute returns the envelope as one JSON text block, image paths without i
     arguments: { code: "view" },
     name: "execute",
   });
-  assert.equal(res.content.length, 1);
-  const envelope = JSON.parse(res.content[0].text);
+  assert.equal(blocks(res).length, 1);
+  const envelope = JSON.parse(blocks(res)[0]?.text ?? "");
   assert.deepEqual(
     { ...envelope, images: envelope.images.length },
     {
@@ -111,7 +120,7 @@ test("a failed program is an MCP tool error; a successful one is not", async () 
     name: "execute",
   });
   assert.equal(failed.isError, true);
-  assert.equal(JSON.parse(failed.content[0].text).error.message, "Error: boom");
+  assert.equal(JSON.parse(blocks(failed)[0]?.text ?? "").error.message, "Error: boom");
   const ok = await client.callTool({
     arguments: { code: "1" },
     name: "execute",
@@ -126,19 +135,19 @@ test("?images=inline adds one PNG image block per view", async () => {
     arguments: { code: "view" },
     name: "execute",
   });
-  const [text, image] = res.content;
-  const path = JSON.parse(text.text).images[0];
+  const [text, image] = blocks(res);
+  const path = JSON.parse(text?.text ?? "").images[0];
   assert.deepEqual(image, {
     data: readFileSync(path).toString("base64"),
     mimeType: "image/png",
     type: "image",
   });
-  assert.equal(res.content.length, 2);
+  assert.equal(blocks(res).length, 2);
   const plain = await client.callTool({
     arguments: { code: "1" },
     name: "execute",
   });
-  assert.equal(plain.content.length, 1, "no views, no image blocks");
+  assert.equal(blocks(plain).length, 1, "no views, no image blocks");
   await client.close();
 });
 

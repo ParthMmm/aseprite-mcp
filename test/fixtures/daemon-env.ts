@@ -1,19 +1,26 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 // Shared by the daemon and e2e tests: free ports, an isolated environment and a daemon on them with the fake runtime.
 import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { Health } from "../../src/stdio-proxy.ts";
+
 export const root = join(import.meta.dirname, "..", "..");
 export const BIN = join(root, "bin", "aseprite-mcp.ts");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) =>
+  new Promise<void>((r) => {
+    setTimeout(r, ms);
+  });
 
-export async function freePort() {
+export async function freePort(): Promise<number> {
   const s = createServer();
-  await new Promise((r) => s.listen(0, "127.0.0.1", r));
-  const { port } = s.address();
+  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+  const { port } = s.address() as AddressInfo;
   await new Promise((r) => s.close(r));
   return port;
 }
@@ -45,25 +52,28 @@ export async function isolatedEnv() {
   };
 }
 
-export async function waitForHealth(base, ms = 5000) {
+export async function waitForHealth(base: string, ms = 5000): Promise<Health> {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(50)) {
     const res = await fetch(`${base}/health`).catch(() => null);
     if (res?.ok) {
-      return res.json();
+      return (await res.json()) as Health;
     }
   }
   throw new Error(`no daemon on ${base}`);
 }
 
 /** Runs `aseprite-mcp serve`; resolves with the child and a promise of its exit code. */
-export function serve(env) {
+export function serve(env: NodeJS.ProcessEnv): {
+  child: ChildProcess;
+  exited: Promise<{ code: number | null; stderr: string }>;
+} {
   const child = spawn(process.execPath, [BIN, "serve"], {
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
-  child.stderr.on("data", (d) => (stderr += d));
-  const exited = new Promise((r) =>
+  child.stderr?.on("data", (d: Buffer) => (stderr += d));
+  const exited = new Promise<{ code: number | null; stderr: string }>((r) =>
     child.on("exit", (code) => r({ code, stderr }))
   );
   return { child, exited };
