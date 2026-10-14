@@ -14,7 +14,7 @@ import {
   loadPalette,
   savePalette,
   loadPalettes,
-} from "../src/color.mjs";
+} from "../src/color.ts";
 
 test("hex parse and format accept every short and long form", () => {
   assert.equal(normHex("#ABC"), "aabbccff");

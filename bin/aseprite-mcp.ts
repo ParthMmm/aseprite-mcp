@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { env, argv, exit, stderr, stdout } from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { loadToken } from "../src/files.mjs";
-import { health, runProxy, shutdown } from "../src/stdio-proxy.mjs";
+import { loadToken } from "../src/files.ts";
+import { health, runProxy, shutdown } from "../src/stdio-proxy.ts";
 
 const binPath = import.meta.filename;
 const { version } = JSON.parse(
@@ -38,9 +38,9 @@ async function serve() {
   const program = await import(
     env.ASEPRITE_MCP_PROGRAM
       ? pathToFileURL(env.ASEPRITE_MCP_PROGRAM).href
-      : "../src/program.mjs"
+      : "../src/program.ts"
   );
-  const { startDaemon } = await import("../src/daemon.mjs");
+  const { startDaemon } = await import("../src/daemon.ts");
   const daemon = await startDaemon({
     httpPort,
     log,

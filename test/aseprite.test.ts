@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { decodeFrame, encodeFrame } from "../src/wire.mjs";
+import { decodeFrame, encodeFrame } from "../src/wire.ts";
 
 const here = import.meta.dirname;
 const ASEPRITE =

@@ -152,7 +152,7 @@ const folderName = (name, id, session) => {
 
 /**
  * Debounced copies of the sprites a program changed, saved by the extension's `backup` command.
- * @param {{ link: import("./link.mjs").Link, dir?: string | null, log?: (...a: any[]) => void }} o
+ * @param {{ link: import("./link.ts").Link, dir?: string | null, log?: (...a: any[]) => void }} o
  * @returns {{ schedule(sprites: { sprite: number, name: string }[]): void, flush(): Promise<void>, cleanup(): Promise<void>, info(): any }}
  */
 export function createBackups({ link, dir = AUTOSAVE_DIR, log = () => {} }) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import * as R from "../src/raster.mjs";
+import * as R from "../src/raster.ts";
 
 const P = { b: "#0000ff", g: "#00ff00", k: "#000000", r: "#ff0000" };
 

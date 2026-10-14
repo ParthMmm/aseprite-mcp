@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { compareVersions } from "./link.mjs";
+import { compareVersions } from "./link.ts";
 
 const START_WAIT_MS = 5000;
 const POLL_MS = 100;

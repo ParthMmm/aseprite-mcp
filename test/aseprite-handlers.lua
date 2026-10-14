@@ -1,5 +1,5 @@
 -- Runs inside `aseprite -b`. Params: ext (extension dir), dir (scratch dir), out (result JSON path).
--- aseprite.test.mjs drives it and turns every case into a Node subtest.
+-- aseprite.test.ts drives it and turns every case into a Node subtest.
 
 local ext, dir = app.params.ext, app.params.dir
 local function module(name) return dofile(app.fs.joinPath(ext, name .. ".lua")) end

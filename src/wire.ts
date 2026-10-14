@@ -1,6 +1,6 @@
 // The binary frame between the daemon and plugin.lua, and the colour-mode boundary: blobs on the wire are
 // Image.bytes in the sprite's mode; everything past this module sees full-canvas RGBA.
-import { normHex, parseHex } from "./color.mjs";
+import { normHex, parseHex } from "./color.ts";
 
 /** @typedef {"rgb" | "indexed" | "gray"} ColorMode */
 

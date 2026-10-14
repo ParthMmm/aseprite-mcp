@@ -21,8 +21,8 @@ import {
   createBackups,
   loadToken,
   pruneViews,
-} from "./files.mjs";
-import { createLink } from "./link.mjs";
+} from "./files.ts";
+import { createLink } from "./link.ts";
 
 const HOST = "127.0.0.1";
 const MAX_BODY = 16 * 1024 * 1024;

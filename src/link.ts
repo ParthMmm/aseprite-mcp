@@ -1,11 +1,11 @@
 // Server side of the Aseprite extension link: one authenticated WebSocket client at a time.
-// Text frames carry plain JSON; a message with byte blobs travels as one binary frame (see wire.mjs).
+// Text frames carry plain JSON; a message with byte blobs travels as one binary frame (see wire.ts).
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { env } from "node:process";
 
 import { WebSocketServer } from "ws";
 
-import { PROTOCOL, encodeFrame, decodeFrame } from "./wire.mjs";
+import { PROTOCOL, encodeFrame, decodeFrame } from "./wire.ts";
 
 export const MIN_EXTENSION = "0.1.0";
 export const NOT_CONNECTED =

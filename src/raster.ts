@@ -8,7 +8,7 @@ import {
   oklchToRgb,
   hueToward,
   SHADOW_HUE,
-} from "./color.mjs";
+} from "./color.ts";
 
 /** @typedef {{ width: number, height: number, data: Uint8Array }} Canvas */
 /** @typedef {[number, number, number, number]} Rect  [x, y, w, h] */

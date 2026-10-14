@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { help } from "../src/help.mjs";
-import { createRuntime, DESCRIPTION } from "../src/program.mjs";
-import { createFakeLink, pixel } from "./fake-link.mjs";
+import { help } from "../src/help.ts";
+import { createRuntime, DESCRIPTION } from "../src/program.ts";
+import { createFakeLink, pixel } from "./fake-link.ts";
 
 async function setup() {
   const dir = await mkdtemp(join(tmpdir(), "aseprite-mcp-program-"));

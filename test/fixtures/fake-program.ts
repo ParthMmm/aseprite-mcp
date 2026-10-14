@@ -1,9 +1,9 @@
-// Stands in for src/program.mjs when a test starts the daemon with ASEPRITE_MCP_PROGRAM=<this file>.
+// Stands in for src/program.ts when a test starts the daemon with ASEPRITE_MCP_PROGRAM=<this file>.
 // execute("view") writes a 1x1 PNG into viewsDir; "throw" fails; any other code echoes back with the link status.
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { encodePng } from "../../src/render.mjs";
+import { encodePng } from "../../src/render.ts";
 
 export const DESCRIPTION = "FAKE execute: test runtime";
 

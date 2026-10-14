@@ -21,7 +21,7 @@
     "url": "git+https://github.com/ParthMmm/aseprite-mcp.git"
   },
   "bin": {
-    "aseprite-mcp": "bin/aseprite-mcp.mjs"
+    "aseprite-mcp": "bin/aseprite-mcp.ts"
   },
   "files": [
     "bin",
@@ -32,14 +32,15 @@
     "LICENSE"
   ],
   "type": "module",
-  "main": "bin/aseprite-mcp.mjs",
+  "main": "bin/aseprite-mcp.ts",
   "scripts": {
-    "start": "node bin/aseprite-mcp.mjs serve",
-    "token": "node bin/aseprite-mcp.mjs token",
-    "build": "node scripts/build-extension.mjs",
+    "start": "node bin/aseprite-mcp.ts serve",
+    "token": "node bin/aseprite-mcp.ts token",
+    "build": "node scripts/build-extension.ts",
     "test": "node --test",
     "check": "ultracite check",
-    "fix": "ultracite fix"
+    "fix": "ultracite fix",
+    "typecheck": "tsc -p ."
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -48,11 +49,13 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "oxfmt": "^0.71.0",
     "oxlint": "^1.88.0",
+    "typescript": "^7.0.2",
     "ultracite": "^8.0.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   }
 }

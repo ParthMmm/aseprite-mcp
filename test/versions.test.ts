@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MIN_EXTENSION } from "../src/link.mjs";
+import { MIN_EXTENSION } from "../src/link.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const json = (path) => JSON.parse(readFileSync(join(root, path), "utf-8"));

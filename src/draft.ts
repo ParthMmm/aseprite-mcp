@@ -1,7 +1,7 @@
 // The host-side mirror of ONE sprite for ONE program run; pixel truth during a program lives here.
 // Each program owns its Draft. Aseprite is the only shared state, and the only merge point is commit:
 // compare-and-swap per cel in Lua, then merge3 here when the artist changed a cel underneath us.
-import { fromRgba } from "./wire.mjs";
+import { fromRgba } from "./wire.ts";
 
 /** @typedef {"rgb" | "indexed" | "gray"} ColorMode */
 /** @typedef {string} CelKey  `${layerPath}@${frame}`, frame 0-based */

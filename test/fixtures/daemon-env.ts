@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const root = join(import.meta.dirname, "..", "..");
-export const BIN = join(root, "bin", "aseprite-mcp.mjs");
+export const BIN = join(root, "bin", "aseprite-mcp.ts");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function freePort() {
@@ -27,7 +27,7 @@ export async function isolatedEnv() {
     ASEPRITE_MCP_AUTOSAVE: "off",
     ASEPRITE_MCP_HTTP_PORT: String(httpPort),
     ASEPRITE_MCP_PORT: String(await freePort()),
-    ASEPRITE_MCP_PROGRAM: join(root, "test", "fixtures", "fake-program.mjs"),
+    ASEPRITE_MCP_PROGRAM: join(root, "test", "fixtures", "fake-program.ts"),
     ASEPRITE_MCP_TOKEN: "t".repeat(48),
     ASEPRITE_MCP_VIEWS_DIR: join(dir, "views"),
     XDG_CONFIG_HOME: join(dir, "config"),

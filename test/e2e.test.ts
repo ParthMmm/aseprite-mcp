@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 // End to end through the command MCP clients launch: `aseprite-mcp` (stdio proxy) starts the daemon
-// detached and pipes JSON-RPC to it. The daemon runs the fake runtime (test/fixtures/fake-program.mjs).
+// detached and pipes JSON-RPC to it. The daemon runs the fake runtime (test/fixtures/fake-program.ts).
 import { test } from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,7 +13,7 @@ import {
   isolatedEnv,
   serve,
   waitForHealth,
-} from "./fixtures/daemon-env.mjs";
+} from "./fixtures/daemon-env.ts";
 
 async function proxyClient(env) {
   const client = new Client({ name: "e2e", version: "0" });

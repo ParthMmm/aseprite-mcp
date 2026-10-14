@@ -7,7 +7,7 @@ import {
   toRgba,
   fromRgba,
   PROTOCOL,
-} from "../src/wire.mjs";
+} from "../src/wire.ts";
 
 test("frame header is AB, version 3, flags 0, u32 LE JSON length, then JSON with blob lengths", () => {
   const frame = encodeFrame({ args: { label: "é" }, cmd: "commit", id: 7 }, [

@@ -1,5 +1,5 @@
 // In-memory Aseprite behind the Link interface: RGB sprites only, full-canvas cel bytes, one undo step per
-// applied commit, compare-and-swap per written cel. Enough for program.test.mjs; the real Lua is in extension/.
+// applied commit, compare-and-swap per written cel. Enough for program.test.ts; the real Lua is in extension/.
 
 const clone = (s) => ({
   ...s,

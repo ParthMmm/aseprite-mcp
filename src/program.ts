@@ -22,13 +22,13 @@ import {
 import { CodeMode, Extension } from "@opencode/codemode";
 import { Effect } from "effect";
 
-import { ramp, loadPalette, savePalette } from "./color.mjs";
-import * as D from "./draft.mjs";
-import { insideAllowedDir } from "./files.mjs";
-import { DESCRIPTION, help } from "./help.mjs";
-import * as R from "./raster.mjs";
-import { composite, critiqueSheet, frameStrip, renderView } from "./render.mjs";
-import { fromRgba, toRgba } from "./wire.mjs";
+import { ramp, loadPalette, savePalette } from "./color.ts";
+import * as D from "./draft.ts";
+import { insideAllowedDir } from "./files.ts";
+import { DESCRIPTION, help } from "./help.ts";
+import * as R from "./raster.ts";
+import { composite, critiqueSheet, frameStrip, renderView } from "./render.ts";
+import { fromRgba, toRgba } from "./wire.ts";
 
 export { DESCRIPTION };
 
@@ -42,7 +42,7 @@ const MAX_RETRIES = 3;
 const KEEP_VIEWS = 200;
 const AUTO_LABEL = "program"; // Lua prefixes "MCP: "
 
-/** @typedef {import("./draft.mjs").Draft} Draft */
+/** @typedef {import("./draft.ts").Draft} Draft */
 /** @typedef {{ sprite: number, name: string, label: string, cels: number, pixels: number, merged: number, lost: number }} CommitInfo */
 /** One sprite inside one run: `d` is replaced on undo/redo/changes, so handles read it through `st`. */
 /** @typedef {{ d: Draft, handle?: object }} SpriteState */
@@ -110,7 +110,7 @@ function diffRect(a, b, w, h) {
 }
 
 /**
- * @param {{ link: import("./link.mjs").Link, viewsDir: string, palettesFile: string, allowedDirs: string[], limits?: object }} o
+ * @param {{ link: import("./link.ts").Link, viewsDir: string, palettesFile: string, allowedDirs: string[], limits?: object }} o
  */
 export function createRuntime({
   link,

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { createServer } from "node:net";
-// src/link.mjs against a real ws client that plays the Aseprite extension.
+// src/link.ts against a real ws client that plays the Aseprite extension.
 import { test } from "node:test";
 
 import WebSocket from "ws";
 
-import { createLink, NOT_CONNECTED } from "../src/link.mjs";
-import { PROTOCOL, encodeFrame, decodeFrame } from "../src/wire.mjs";
+import { createLink, NOT_CONNECTED } from "../src/link.ts";
+import { PROTOCOL, encodeFrame, decodeFrame } from "../src/wire.ts";
 
 const TOKEN = "a".repeat(48);
 function hmac(token, text) {

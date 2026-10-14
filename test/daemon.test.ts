@@ -12,7 +12,7 @@ import {
   serve,
   waitForHealth,
   root,
-} from "./fixtures/daemon-env.mjs";
+} from "./fixtures/daemon-env.ts";
 
 const VERSION = JSON.parse(
   readFileSync(`${root}/package.json`, "utf-8")

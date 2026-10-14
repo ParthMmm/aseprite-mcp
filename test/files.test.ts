@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 
-import { createBackups } from "../src/files.mjs";
+import { createBackups } from "../src/files.ts";
 
 function recordingLink() {
   const calls = [];

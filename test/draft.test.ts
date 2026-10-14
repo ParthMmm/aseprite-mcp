@@ -12,7 +12,7 @@ import {
   merge3,
   resolveConflict,
   rebase,
-} from "../src/draft.mjs";
+} from "../src/draft.ts";
 
 const T = [0, 0, 0, 0];
 const R = [255, 0, 0, 255];

@@ -17,5 +17,5 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # aseprite.test.mjs needs the Aseprite app, so CI skips it.
-      - run: node --test $(ls test/*.test.mjs | grep -v '/aseprite\.test\.mjs$')
+      # aseprite.test.ts needs the Aseprite app, so CI skips it.
+      - run: node --test $(ls test/*.test.ts | grep -v '/aseprite\.test\.ts$')

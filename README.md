@@ -12,7 +12,7 @@ Measured on an Apple Silicon Mac with Aseprite 1.3.18: a program that draws a 48
 
 ## Install
 
-Requires Aseprite and Node.js 20 or later. [Bun](https://bun.sh/) also runs the daemon, about 30% faster. The tests need Node.
+Requires Aseprite and Node.js 22.18 or later (it runs the TypeScript sources directly). [Bun](https://bun.sh/) also runs the daemon, about 30% faster. The tests need Node.
 
 1. Clone the repository and build the extension.
 
@@ -28,19 +28,19 @@ Requires Aseprite and Node.js 20 or later. [Bun](https://bun.sh/) also runs the 
 4. Print the pairing token.
 
    ```sh
-   node bin/aseprite-mcp.mjs token
+   node bin/aseprite-mcp.ts token
    ```
 
 5. In Aseprite, choose **File > Aseprite MCP...**, paste the token, and select **Connect**.
 
-To make a new token, run `node bin/aseprite-mcp.mjs token --new`, then paste it in the dialog again.
+To make a new token, run `node bin/aseprite-mcp.ts token --new`, then paste it in the dialog again.
 
 ## Run
 
 Start the shared daemon:
 
 ```sh
-node bin/aseprite-mcp.mjs serve   # or: bun bin/aseprite-mcp.mjs serve
+node bin/aseprite-mcp.ts serve   # or: bun bin/aseprite-mcp.ts serve
 ```
 
 The daemon serves MCP at `http://127.0.0.1:9124/mcp`. Aseprite connects to it on `ws://127.0.0.1:9123`.
@@ -48,7 +48,7 @@ The daemon serves MCP at `http://127.0.0.1:9124/mcp`. Aseprite connects to it on
 Connect a client in one of two ways:
 
 - **Executor:** use Quick Add with the URL `http://127.0.0.1:9124/mcp`.
-- **Any stdio client:** set the command to `node /path/to/aseprite-mcp/bin/aseprite-mcp.mjs`. It starts the daemon if none runs.
+- **Any stdio client:** set the command to `node /path/to/aseprite-mcp/bin/aseprite-mcp.ts`. It starts the daemon if none runs.
 
 By default, a view is returned as a file path. Use `http://127.0.0.1:9124/mcp?images=inline` to also get image blocks in the result.
 
@@ -56,8 +56,8 @@ Other commands:
 
 | Command | Action |
 | --- | --- |
-| `node bin/aseprite-mcp.mjs status` | Show whether the daemon runs and Aseprite is connected. |
-| `node bin/aseprite-mcp.mjs stop` | Stop the daemon. |
+| `node bin/aseprite-mcp.ts status` | Show whether the daemon runs and Aseprite is connected. |
+| `node bin/aseprite-mcp.ts stop` | Stop the daemon. |
 
 ### Start the daemon at login on macOS
 
@@ -72,7 +72,7 @@ Save this as `~/Library/LaunchAgents/com.parthmmm.aseprite-mcp.plist`. Replace b
   <key>ProgramArguments</key>
   <array>
     <string>/Users/you/.bun/bin/bun</string>
-    <string>/path/to/aseprite-mcp/bin/aseprite-mcp.mjs</string>
+    <string>/path/to/aseprite-mcp/bin/aseprite-mcp.ts</string>
     <string>serve</string>
   </array>
   <key>RunAtLoad</key><true/>
@@ -186,7 +186,7 @@ npm install
 node --test
 ```
 
-`node --test` also runs `test/aseprite.test.mjs`. It runs `test/aseprite-handlers.lua` in a real Aseprite in batch mode, and it skips when it cannot find the app. Set `ASEPRITE=/path/to/aseprite` to point to the binary.
+`node --test` also runs `test/aseprite.test.ts`. It runs `test/aseprite-handlers.lua` in a real Aseprite in batch mode, and it skips when it cannot find the app. Set `ASEPRITE=/path/to/aseprite` to point to the binary.
 
 `npm run build` writes `dist/aseprite-mcp.aseprite-extension`.
 
