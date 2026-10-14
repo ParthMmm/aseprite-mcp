@@ -18,5 +18,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run check
       # aseprite.test.ts needs the Aseprite app, so CI skips it.
       - run: node --test $(ls test/*.test.ts | grep -v '/aseprite\.test\.ts$')
