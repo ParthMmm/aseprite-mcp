@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import nodePath from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { MIN_EXTENSION } from "../src/link.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const json = (path) => JSON.parse(readFileSync(join(root, path), "utf-8"));
-const parts = (v) => v.split(".").map(Number);
-const atLeast = (a, b) => {
+const json = (path: string) =>
+  JSON.parse(readFileSync(nodePath.join(root, path), "utf-8"));
+const parts = (v: string) => v.split(".").map(Number);
+const atLeast = (a: string, b: string) => {
   const [x, y] = [parts(a), parts(b)];
-  for (let i = 0; i < 3; i++) {
-    if (x[i] !== y[i]) return x[i] > y[i];
+  for (let i = 0; i < 3; i += 1) {
+    if (x[i] !== y[i]) {
+      return x[i] > y[i];
+    }
   }
   return true;
 };
@@ -27,9 +30,10 @@ test("package.json and package-lock.json agree on the version", () => {
 });
 
 test("the extension manifest and handlers.lua agree on the version", () => {
-  const lua = readFileSync(join(root, "extension/handlers.lua"), "utf-8").match(
-    /VERSION = "([^"]+)"/
-  )?.[1];
+  const lua = readFileSync(
+    nodePath.join(root, "extension/handlers.lua"),
+    "utf-8"
+  ).match(/VERSION = "(?<version>[^"]+)"/u)?.groups?.version;
   assert.equal(lua, extension);
 });
 

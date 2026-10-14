@@ -13,42 +13,48 @@ import {
   resolveConflict,
   rebase,
 } from "../src/draft.ts";
+import type { ColorMode } from "../src/wire.ts";
 
 const T = [0, 0, 0, 0];
 const R = [255, 0, 0, 255];
 const G = [0, 255, 0, 255];
 const B = [0, 0, 255, 255];
 const K = [0, 0, 0, 255];
-const cel = (...pixels) => new Uint8Array(pixels.flat());
-const pixels = (buf) =>
-  Array.from({ length: buf.length / 4 }, (_, i) => [
+const cel = (...pixels: number[][]) => new Uint8Array(pixels.flat());
+const pixels = (buf: Uint8Array | null) => {
+  assert.ok(buf, "cel bytes exist");
+  return Array.from({ length: buf.length / 4 }, (_, i) => [
     ...buf.subarray(i * 4, i * 4 + 4),
   ]);
+};
 
 /** 2x1 sprite: layers bg, fx (group), fx/glow; 2 frames; bg@0 and bg@1 linked; fx/glow@0. */
-function snapshot({ colorMode = "rgb", palette = ["#00000000"] } = {}) {
+const snapshot = ({
+  colorMode = "rgb",
+  palette = ["#00000000"],
+}: { colorMode?: ColorMode; palette?: string[] } = {}) => {
   const reply = {
     cels: [
-      { layer: "bg", frame: 0, blob: 0, link: 0 },
-      { layer: "bg", frame: 1, blob: 0, link: 0 },
-      { layer: "fx/glow", frame: 0, blob: 1, link: null },
+      { blob: 0, frame: 0, layer: "bg", link: 0 },
+      { blob: 0, frame: 1, layer: "bg", link: 0 },
+      { blob: 1, frame: 0, layer: "fx/glow", link: null },
     ],
     frames: [{ duration: 0.1 }, { duration: 0.1 }],
     layers: [
       {
+        blend: "normal",
+        group: false,
+        opacity: 255,
         path: "bg",
         visible: true,
-        opacity: 255,
+      },
+      { blend: "normal", group: true, opacity: 255, path: "fx", visible: true },
+      {
         blend: "normal",
         group: false,
-      },
-      { path: "fx", visible: true, opacity: 255, blend: "normal", group: true },
-      {
+        opacity: 200,
         path: "fx/glow",
         visible: true,
-        opacity: 200,
-        blend: "normal",
-        group: false,
       },
     ],
     palette,
@@ -65,7 +71,7 @@ function snapshot({ colorMode = "rgb", palette = ["#00000000"] } = {}) {
     tags: [],
   };
   return fromSnapshot(reply, [cel(R, T), cel(T, G)]);
-}
+};
 
 test("fromSnapshot shares one buffer between linked cels", () => {
   const d = snapshot();
@@ -87,12 +93,12 @@ test("unknown layers, group layers and missing frames throw program-facing error
   const d = snapshot();
   assert.throws(
     () => writable(d, "body", 0),
-    /Unknown layer 'body'. Layers: bg, fx, fx\/glow/
+    /Unknown layer 'body'. Layers: bg, fx, fx\/glow/u
   );
-  assert.throws(() => writable(d, "fx", 0), /'fx' is a group layer/);
+  assert.throws(() => writable(d, "fx", 0), /'fx' is a group layer/u);
   assert.throws(
     () => readable(d, "bg", 2),
-    /Frame 2 does not exist; the sprite has 2 frames \(0-1\)/
+    /Frame 2 does not exist; the sprite has 2 frames \(0-1\)/u
   );
 });
 
@@ -157,7 +163,7 @@ test("indexed: more than 256 colours fails with a clear message", () => {
     ),
   });
   writable(d, "bg", 0).set([1, 2, 3, 255], 0);
-  assert.throws(() => plan(d), /would need 257 colours \(max 256\)/);
+  assert.throws(() => plan(d), /would need 257 colours \(max 256\)/u);
 });
 
 test("setFrames copies each layer's last frame into new frames and sets durations", () => {
@@ -194,7 +200,7 @@ test("setFrames copies each layer's last frame into new frames and sets duration
 test("setFrames shrinks, takes durations, and a shrunk-then-grown frame keeps its snapshot base", () => {
   const d = snapshot();
   setFrames(d, 1, [0.25]);
-  assert.throws(() => readable(d, "bg", 1), /Frame 1 does not exist/);
+  assert.throws(() => readable(d, "bg", 1), /Frame 1 does not exist/u);
   assert.deepEqual(plan(d).ops, [
     { count: 1, durations: [0.25], op: "frames.set" },
   ]);
@@ -208,7 +214,7 @@ test("setFrames shrinks, takes durations, and a shrunk-then-grown frame keeps it
   );
   assert.throws(
     () => setFrames(d, 3, [0.1]),
-    /durations has 1 entries for 3 frames/
+    /durations has 1 entries for 3 frames/u
   );
 });
 
@@ -221,7 +227,7 @@ test("layer and tag staging become ordered struct ops", () => {
   stageLayer(d, "outline", { below: "magic/shine", visible: false });
   stageLayer(d, "top");
   stageTag(d, "walk", 0, 1, { direction: "pingpong" });
-  assert.throws(() => writable(d, "fx/glow", 0), /Unknown layer 'fx\/glow'/);
+  assert.throws(() => writable(d, "fx/glow", 0), /Unknown layer 'fx\/glow'/u);
   writable(d, "magic/shine", 0).set(R, 0);
   assert.deepEqual(
     d.structure.layers.map((l) => l.path),
@@ -253,7 +259,7 @@ test("removing a group removes its children once and drops their cels", () => {
   assert.deepEqual(p.writes, []);
   assert.throws(
     () => stageLayer(d, "nope", { remove: true }),
-    /Unknown layer 'nope'/
+    /Unknown layer 'nope'/u
   );
 });
 
@@ -313,7 +319,7 @@ test("rebase makes the next plan empty, and a second rebase changes nothing", ()
   rebase(d, second);
   assert.deepEqual(plan(d).writes, []);
   assert.deepEqual(pixels(readable(d, "bg", 0)), [R, B]);
-  assert.equal(d.cels.get("fx/g@0").base, null);
+  assert.equal(d.cels.get("fx/g@0")?.base, null);
 });
 
 test("edits made after plan stay dirty through rebase", () => {

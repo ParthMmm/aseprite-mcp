@@ -47,23 +47,23 @@ test("round trip with zero blobs, empty blobs and a multi-MB blob", () => {
 
 test("decodeFrame rejects bad magic, version, flags and lengths", () => {
   const good = encodeFrame({ id: 1 }, [new Uint8Array([1, 2])]);
-  const with_ = (i, v) => {
+  const with_ = (i: number, v: number) => {
     const b = Buffer.from(good);
     b[i] = v;
     return b;
   };
-  assert.throws(() => decodeFrame(with_(0, 0x58)), /bad magic/);
-  assert.throws(() => decodeFrame(with_(2, 2)), /protocol 2, expected 3/);
-  assert.throws(() => decodeFrame(with_(3, 1)), /flags 1/);
+  assert.throws(() => decodeFrame(with_(0, 0x58)), /bad magic/u);
+  assert.throws(() => decodeFrame(with_(2, 2)), /protocol 2, expected 3/u);
+  assert.throws(() => decodeFrame(with_(3, 1)), /flags 1/u);
   assert.throws(
     () => decodeFrame(good.subarray(0, -1)),
-    /blob lengths add up to 2 bytes, frame carries 1/
+    /blob lengths add up to 2 bytes, frame carries 1/u
   );
   assert.throws(
     () => decodeFrame(Buffer.concat([good, Buffer.from([0])])),
-    /blob lengths/
+    /blob lengths/u
   );
-  assert.throws(() => decodeFrame(good.subarray(0, 5)), /bad magic/);
+  assert.throws(() => decodeFrame(good.subarray(0, 5)), /bad magic/u);
 });
 
 const PALETTE = ["#00000000", "#ff0000ff", "#00ff00ff", "#0000ffff"];
@@ -116,10 +116,10 @@ test("rgb passes through as a copy; bad sizes and modes throw", () => {
   assert.notEqual(out.buffer, src.buffer);
   assert.throws(
     () => toRgba(new Uint8Array(3), "gray", [], 0),
-    /not a whole number of gray pixels/
+    /not a whole number of gray pixels/u
   );
   assert.throws(
-    () => fromRgba(new Uint8Array(4), "cmyk", [], 0),
-    /Unknown colour mode/
+    () => fromRgba(new Uint8Array(4), "cmyk" as never, [], 0),
+    /Unknown colour mode/u
   );
 });

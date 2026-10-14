@@ -15,7 +15,7 @@ import {
   waitForHealth,
 } from "./fixtures/daemon-env.ts";
 
-async function proxyClient(env) {
+const proxyClient = async (env: Record<string, string>) => {
   const client = new Client({ name: "e2e", version: "0" });
   await client.connect(
     new StdioClientTransport({
@@ -26,7 +26,7 @@ async function proxyClient(env) {
     })
   );
   return client;
-}
+};
 
 test("the stdio proxy starts a daemon, lists the one tool and inlines views", async (t) => {
   const ctx = await isolatedEnv();
@@ -40,7 +40,7 @@ test("the stdio proxy starts a daemon, lists the one tool and inlines views", as
   const client = await proxyClient(ctx.env);
   const { tools } = await client.listTools();
   assert.deepEqual(
-    tools.map((t) => t.name),
+    tools.map((tool) => tool.name),
     ["execute"]
   );
 
@@ -48,8 +48,8 @@ test("the stdio proxy starts a daemon, lists the one tool and inlines views", as
     arguments: { code: "view" },
     name: "execute",
   });
-  const [text, image] = res.content;
-  const envelope = JSON.parse(text.text);
+  const [text, image] = (res as { content: { text: string }[] }).content;
+  const envelope = JSON.parse(text?.text ?? "");
   assert.equal(envelope.ok, true);
   assert.deepEqual(image, {
     data: readFileSync(envelope.images[0]).toString("base64"),
@@ -59,11 +59,8 @@ test("the stdio proxy starts a daemon, lists the one tool and inlines views", as
 
   const { pid } = await waitForHealth(ctx.base);
   await client.close();
-  assert.equal(
-    (await waitForHealth(ctx.base)).pid,
-    pid,
-    "the daemon outlives the proxy"
-  );
+  const { pid: pidAfter } = await waitForHealth(ctx.base);
+  assert.equal(pidAfter, pid, "the daemon outlives the proxy");
 });
 
 test("the proxy reuses a running daemon instead of starting another", async (t) => {
@@ -77,19 +74,27 @@ test("the proxy reuses a running daemon instead of starting another", async (t) 
     arguments: { code: "1" },
     name: "execute",
   });
-  assert.deepEqual(JSON.parse(res.content[0].text).value, {
-    code: "1",
-    connected: false,
-  });
-  assert.equal((await waitForHealth(ctx.base)).pid, daemon.child.pid);
+  assert.deepEqual(
+    JSON.parse((res as { content: { text: string }[] }).content[0]?.text ?? "")
+      .value,
+    {
+      code: "1",
+      connected: false,
+    }
+  );
+  const { pid } = await waitForHealth(ctx.base);
+  assert.equal(pid, daemon.child.pid);
   await client.close();
 });
 
 test("status and stop talk to the daemon", async (t) => {
   const ctx = await isolatedEnv();
   t.after(() => ctx.cleanup());
-  const run = (cmd) =>
-    spawnSync(process.execPath, [BIN, cmd], { encoding: "utf8", env: ctx.env });
+  const run = (cmd: string) =>
+    spawnSync(process.execPath, [BIN, cmd], {
+      encoding: "utf-8",
+      env: ctx.env,
+    });
 
   assert.equal(run("status").status, 1, "status fails without a daemon");
   const daemon = serve(ctx.env);
@@ -97,6 +102,7 @@ test("status and stop talk to the daemon", async (t) => {
   const status = run("status");
   assert.equal(status.status, 0);
   assert.equal(JSON.parse(status.stdout).pid, daemon.child.pid);
-  assert.match(run("stop").stdout, /Stopped/);
-  assert.equal((await daemon.exited).code, 0);
+  assert.match(run("stop").stdout, /Stopped/u);
+  const { code } = await daemon.exited;
+  assert.equal(code, 0);
 });

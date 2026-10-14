@@ -12,19 +12,19 @@ import {
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-function crcOf(buf) {
+const crcOf = (buf: Uint8Array) => {
   let crc = ~0;
   for (const byte of buf) {
     crc ^= byte;
-    for (let bit = 0; bit < 8; bit++) {
-      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xed_b8_83_20 & -(crc & 1));
     }
   }
   return ~crc >>> 0;
-}
+};
 
 /** Minimal decoder for the PNGs encodePng writes: checks every chunk CRC and returns RGBA. */
-function decodePng(png) {
+const decodePng = (png: Buffer) => {
   assert.deepEqual([...png.subarray(0, 8)], SIGNATURE);
   const chunks = [];
   for (let o = 8; o < png.length;) {
@@ -54,7 +54,7 @@ function decodePng(png) {
   const raw = inflateSync(chunks[1].body);
   assert.equal(raw.length, (width * 4 + 1) * height);
   const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
+  for (let y = 0; y < height; y += 1) {
     assert.equal(raw[y * (width * 4 + 1)], 0, "filter 0");
     data.set(
       raw.subarray(y * (width * 4 + 1) + 1, (y + 1) * (width * 4 + 1)),
@@ -62,8 +62,12 @@ function decodePng(png) {
     );
   }
   return { data, height, width };
-}
-const pixel = (img, x, y) => [
+};
+const pixel = (
+  img: { data: Uint8Array; width: number },
+  x: number,
+  y: number
+) => [
   ...img.data.subarray((y * img.width + x) * 4, (y * img.width + x) * 4 + 4),
 ];
 
@@ -132,7 +136,7 @@ test("renderView picks a scale near 512 px and refuses huge images", () => {
         { data: new Uint8Array(2048 * 2048 * 4), height: 2048, width: 2048 },
         { scale: 4 }
       ),
-    /smaller scale/
+    /smaller scale/u
   );
 });
 
@@ -171,8 +175,8 @@ test("critiqueSheet lays out colour, gray, silhouette and 1x panels", () => {
   assert.deepEqual(pixel(img, 34, 4), [255, 0, 0, 255], "1x panel");
   assert.deepEqual(pixel(img, 35, 5), [0, 0, 255, 255], "1x panel");
   assert.throws(
-    () => critiqueSheet(cv, { panels: ["sepia"] }),
-    /Unknown critique panel/
+    () => critiqueSheet(cv, { panels: ["sepia"] as never }),
+    /Unknown critique panel/u
   );
 });
 

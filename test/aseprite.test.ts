@@ -10,9 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import nodePath from "node:path";
 import { after, describe, test } from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { decodeFrame, encodeFrame } from "../src/wire.ts";
 
@@ -21,11 +20,16 @@ const ASEPRITE =
   process.env.ASEPRITE ?? "/Applications/Aseprite.app/Contents/MacOS/aseprite";
 const skip = existsSync(ASEPRITE) ? false : `Aseprite not found at ${ASEPRITE}`;
 
-function runAseprite() {
-  const dir = mkdtempSync(join(tmpdir(), "aseprite-mcp-lua-"));
-  const out = join(dir, "result.json");
+interface LuaResult {
+  cases: { name: string; ok: boolean; error?: string }[];
+  [key: string]: unknown;
+}
+
+const runAseprite = (): { dir: string; result: LuaResult } => {
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "aseprite-mcp-lua-"));
+  const out = nodePath.join(dir, "result.json");
   writeFileSync(
-    join(dir, "node-frame.bin"),
+    nodePath.join(dir, "node-frame.bin"),
     encodeFrame(
       { args: { list: [1, true], n: -2.5, text: 'é "q"\n' }, cmd: "x", id: 7 },
       [Uint8Array.of(1, 2, 3), new Uint8Array(0)]
@@ -36,13 +40,13 @@ function runAseprite() {
     [
       "-b",
       "--script-param",
-      `ext=${join(here, "..", "extension")}`,
+      `ext=${nodePath.join(here, "..", "extension")}`,
       "--script-param",
       `dir=${dir}`,
       "--script-param",
       `out=${out}`,
       "--script",
-      join(here, "aseprite-handlers.lua"),
+      nodePath.join(here, "aseprite-handlers.lua"),
     ],
     { encoding: "utf-8", timeout: 60_000 }
   );
@@ -51,18 +55,25 @@ function runAseprite() {
     `Aseprite wrote no results (status ${run.status}):\n${run.stdout}\n${run.stderr}`
   );
   return { dir, result: JSON.parse(readFileSync(out, "utf-8")) };
-}
+};
+
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 describe("extension handlers in Aseprite", { skip }, () => {
-  const { dir, result } = skip ? { result: { cases: [] } } : runAseprite();
-  after(() => dir && rmSync(dir, { force: true, recursive: true }));
+  const { dir, result } = skip
+    ? { dir: "", result: { cases: [] } as LuaResult }
+    : runAseprite();
+  after(() => {
+    if (dir) {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
 
   for (const c of result.cases) {
-    test(c.name, () => assert.ok(c.ok, c.error));
+    test(c.name, () => assert.ok(c.ok, c.error ?? "case failed"));
   }
 
   test("SHA-256 matches node:crypto", () => {
-    const sha = (s) => createHash("sha256").update(s).digest("hex");
     assert.deepEqual(result.sha, {
       abc: sha("abc"),
       empty: sha(""),
@@ -85,7 +96,7 @@ describe("extension handlers in Aseprite", { skip }, () => {
 
   test("Node decodes the binary frame Lua encoded", () => {
     const { msg, blobs } = decodeFrame(
-      readFileSync(join(dir, "lua-frame.bin"))
+      readFileSync(nodePath.join(dir, "lua-frame.bin"))
     );
     assert.deepEqual(msg, {
       id: 9,

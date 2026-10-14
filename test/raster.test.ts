@@ -6,13 +6,13 @@ import * as R from "../src/raster.ts";
 const P = { b: "#0000ff", g: "#00ff00", k: "#000000", r: "#ff0000" };
 
 /** rows -> canvas (width = longest row) */
-function canvas(rows, palette = P) {
+const canvas = (rows: string[], palette: R.Palette = P) => {
   const cv = R.blank(Math.max(...rows.map((r) => r.length)), rows.length);
   R.map(cv, palette, rows);
   return cv;
-}
+};
 /** canvas -> full-width rows with the test palette's keys */
-const show = (cv, palette = P) =>
+const show = (cv: R.Canvas, palette: R.Palette = P) =>
   R.read(cv, { palette }).rows.map((r) => r.padEnd(cv.width, "."));
 
 test("map writes keys, skips '.' and ' ', erases with #00000000, honours the offset", () => {
@@ -27,7 +27,7 @@ test("map writes keys, skips '.' and ' ', erases with #00000000, honours the off
 
 test("map flips h, v and hv", () => {
   const rows = ["rg", "b."];
-  const at = (flip) => {
+  const at = (flip: R.Flip) => {
     const cv = R.blank(2, 2);
     R.map(cv, P, rows, { flip });
     return show(cv);
@@ -41,7 +41,7 @@ test("map with an unknown character throws and changes nothing", () => {
   const cv = R.blank(3, 1);
   assert.throws(
     () => R.map(cv, P, ["rzq"]),
-    /Characters not in palette: "z", "q"/
+    /Characters not in palette: "z", "q"/u
   );
   assert.deepEqual(show(cv), ["..."]);
 });
@@ -70,7 +70,7 @@ test("rect outline, fill and clipping", () => {
   assert.equal(R.rect(cv, [0, 0, 4, 3], "#000"), 10);
   assert.equal(R.rect(cv, [3, 2, 9, 9], "#f00", { fill: true }), 4);
   assert.deepEqual(show(cv), ["kkkk.", "k..k.", "kkkrr", "...rr"]);
-  assert.throws(() => R.rect(cv, [0, 0, 2], "#000"), /rect must be/);
+  assert.throws(() => R.rect(cv, [0, 0, 2] as never, "#000"), /rect must be/u);
 });
 
 test("ellipse outline and fill have the pixel-art shape", () => {
@@ -116,15 +116,16 @@ test("outline outside and inside use the given colour", () => {
   assert.deepEqual(show(ins), ["kkk", "krk", "kkk"]);
 });
 
+const lum = (c: string) =>
+  Number.parseInt(c.slice(1, 3), 16) +
+  Number.parseInt(c.slice(3, 5), 16) +
+  Number.parseInt(c.slice(5, 7), 16);
+
 test("selective outline darkens the bordering colour, darker on the shadow side", () => {
   const cv = canvas(["...", ".r.", "..."]);
-  assert.equal(R.outline(cv, null, { rect: [0, 0, 3, 3] }), 4);
+  assert.equal(R.outline(cv, null as never, { rect: [0, 0, 3, 3] }), 4);
   const { palette, rows } = R.read(cv, { palette: { r: "#ff0000" } });
-  const at = (x, y) => palette[rows[y][x]];
-  const lum = (c) =>
-    Number.parseInt(c.slice(1, 3), 16) +
-    Number.parseInt(c.slice(3, 5), 16) +
-    Number.parseInt(c.slice(5, 7), 16);
+  const at = (x: number, y: number) => palette[rows[y][x]];
   assert.equal(rows[0][0], ".");
   assert.ok(lum(at(1, 0)) > lum(at(1, 2)), "top edge faces the light");
   assert.ok(lum(at(0, 1)) > lum(at(2, 1)), "left edge faces the light");
