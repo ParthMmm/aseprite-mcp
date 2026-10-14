@@ -81,7 +81,7 @@ const equal = (a: Uint8Array, b: Uint8Array): boolean =>
 
 class StructureError extends Error {}
 
-export function createFakeLink(): FakeLink {
+export const createFakeLink = (): FakeLink => {
   const sprites = new Map<number, Entry>();
   let nextId = 1;
   let active: number | null = null;
@@ -457,15 +457,15 @@ export function createFakeLink(): FakeLink {
     }),
   };
   return link;
-}
+};
 
 /** RGBA of pixel (x, y) in a full-canvas buffer, or null when the cel does not exist. */
-export function pixel(
+export const pixel = (
   bytes: Uint8Array | null | undefined,
   width: number,
   x: number,
   y: number
-): [number, number, number, number] | null {
+): [number, number, number, number] | null => {
   if (!bytes) {
     return null;
   }
@@ -476,4 +476,4 @@ export function pixel(
     bytes[i + 2] ?? 0,
     bytes[i + 3] ?? 0,
   ];
-}
+};

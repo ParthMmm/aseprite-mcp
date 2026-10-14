@@ -8,7 +8,7 @@ import { encodePng } from "../../src/render.ts";
 
 export const DESCRIPTION = "FAKE execute: test runtime";
 
-export function createRuntime({ link, viewsDir }: RuntimeOptions) {
+export const createRuntime = ({ link, viewsDir }: RuntimeOptions) => {
   return {
     async execute(code: string): Promise<Envelope> {
       if (code === "throw") {
@@ -39,4 +39,4 @@ export function createRuntime({ link, viewsDir }: RuntimeOptions) {
       };
     },
   };
-}
+};

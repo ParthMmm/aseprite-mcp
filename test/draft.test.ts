@@ -29,10 +29,10 @@ const pixels = (buf: Uint8Array | null) => {
 };
 
 /** 2x1 sprite: layers bg, fx (group), fx/glow; 2 frames; bg@0 and bg@1 linked; fx/glow@0. */
-function snapshot({
+const snapshot = ({
   colorMode = "rgb",
   palette = ["#00000000"],
-}: { colorMode?: ColorMode; palette?: string[] } = {}) {
+}: { colorMode?: ColorMode; palette?: string[] } = {}) => {
   const reply = {
     cels: [
       { blob: 0, frame: 0, layer: "bg", link: 0 },
@@ -71,7 +71,7 @@ function snapshot({
     tags: [],
   };
   return fromSnapshot(reply, [cel(R, T), cel(T, G)]);
-}
+};
 
 test("fromSnapshot shares one buffer between linked cels", () => {
   const d = snapshot();

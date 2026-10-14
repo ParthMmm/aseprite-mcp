@@ -1,31 +1,31 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 // Shared by the daemon and e2e tests: free ports, an isolated environment and a daemon on them with the fake runtime.
+import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import nodePath from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import type { Health } from "../../src/stdio-proxy.ts";
 
 export const root = nodePath.join(import.meta.dirname, "..", "..");
 export const BIN = nodePath.join(root, "bin", "aseprite-mcp.ts");
-const sleep = (ms: number) =>
-  new Promise<void>((r) => {
-    setTimeout(r, ms);
-  });
 
-export async function freePort(): Promise<number> {
+export const freePort = async (): Promise<number> => {
   const s = createServer();
-  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+  s.listen(0, "127.0.0.1");
+  await once(s, "listening");
   const { port } = s.address() as AddressInfo;
-  await new Promise((r) => s.close(r));
+  s.close();
+  await once(s, "close");
   return port;
-}
+};
 
 /** Fresh ports and directories; `cleanup()` stops whatever daemon answers on the port and removes the directories. */
-export async function isolatedEnv() {
+export const isolatedEnv = async () => {
   const dir = mkdtempSync(nodePath.join(tmpdir(), "mcp-test-"));
   const httpPort = await freePort();
   const env = {
@@ -56,31 +56,40 @@ export async function isolatedEnv() {
     env,
     httpPort,
   };
-}
+};
 
-export async function waitForHealth(base: string, ms = 5000): Promise<Health> {
-  for (const end = Date.now() + ms; Date.now() < end; await sleep(50)) {
+export const waitForHealth = (base: string, ms = 5000): Promise<Health> => {
+  const end = Date.now() + ms;
+  const attempt = async (): Promise<Health> => {
     const res = await fetch(`${base}/health`).catch(() => null);
     if (res?.ok) {
       return (await res.json()) as Health;
     }
-  }
-  throw new Error(`no daemon on ${base}`);
-}
+    if (Date.now() >= end) {
+      throw new Error(`no daemon on ${base}`);
+    }
+    await sleep(50);
+    return attempt();
+  };
+  return attempt();
+};
 
 /** Runs `aseprite-mcp serve`; resolves with the child and a promise of its exit code. */
-export function serve(env: NodeJS.ProcessEnv): {
+export const serve = (
+  env: NodeJS.ProcessEnv
+): {
   child: ChildProcess;
   exited: Promise<{ code: number | null; stderr: string }>;
-} {
+} => {
   const child = spawn(process.execPath, [BIN, "serve"], {
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stderr = "";
   child.stderr?.on("data", (d: Buffer) => (stderr += d));
-  const exited = new Promise<{ code: number | null; stderr: string }>((r) =>
-    child.on("exit", (code) => r({ code, stderr }))
-  );
+  const exited = once(child, "exit").then(([code]) => ({
+    code: code as number | null,
+    stderr,
+  }));
   return { child, exited };
-}
+};
