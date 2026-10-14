@@ -119,10 +119,11 @@ export function createLink({
     ws.once("close", () => {
       clearTimeout(deadline);
       for (const [key, entry] of pending) {
-        if (entry.ws === ws)
+        if (entry.ws === ws) {
           settle(key, (p) =>
             p.reject(new Error("Connection to Aseprite was lost."))
           );
+        }
       }
       if (current !== ws) {
         return;
@@ -138,7 +139,7 @@ export function createLink({
           return onReply(
             isBinary
               ? decodeFrame(data)
-              : { msg: JSON.parse(data.toString()), blobs: [] }
+              : { blobs: [], msg: JSON.parse(data.toString()) }
           );
         }
         if (isBinary) {
@@ -268,9 +269,9 @@ export function createLink({
     request,
     status: () => ({
       connected: current !== null,
+      error,
       extension,
       port: boundPort,
-      error,
     }),
   };
 }

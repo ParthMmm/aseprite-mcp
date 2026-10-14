@@ -1,15 +1,17 @@
 // Colour text, OKLCH maths for shade ramps, and the named-palette file.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import path from "node:path";
 
-/** @typedef {[number, number, number, number]} Rgba */
+export type Rgba = [number, number, number, number];
+export type Oklch = [number, number, number];
+export type Palette = Record<string, string>;
 
 // "." and " " mean "leave the pixel alone" in pixel maps, so a palette may not use them as keys.
 const RESERVED_KEYS = new Set([".", " "]);
 
 /** Any of #rgb, #rgba, #rrggbb, #rrggbbaa (the # is optional) to "rrggbbaa" in lower case. */
-export function normHex(c) {
-  const m = /^#?([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(
+export const normHex = (c: unknown): string => {
+  const m = /^#?(?<digits>[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/iu.exec(
     typeof c === "string" ? c.trim() : ""
   );
   if (!m) {
@@ -17,35 +19,35 @@ export function normHex(c) {
       `Not a colour: ${JSON.stringify(c)}. Use #rgb, #rgba, #rrggbb or #rrggbbaa.`
     );
   }
-  let h = m[1].toLowerCase();
+  let h = (m.groups?.digits ?? "").toLowerCase();
   if (h.length <= 4) {
     h = [...h].map((d) => d + d).join("");
   }
   return h.padEnd(8, "f");
-}
+};
 
-/** @returns {Rgba} */
-export function parseHex(c) {
+export const parseHex = (c: unknown): Rgba => {
   const hex = normHex(c);
-  return /** @type {Rgba} */ (
-    [0, 2, 4, 6].map((i) => Number.parseInt(hex.slice(i, i + 2), 16))
+  const [r, g, b, a] = [0, 2, 4, 6].map((i) =>
+    Number.parseInt(hex.slice(i, i + 2), 16)
   );
-}
+  return [r, g, b, a];
+};
 
 /** "#rrggbb" for opaque colours, "#rrggbbaa" otherwise. */
-export function formatHex([r, g, b, a = 255]) {
-  const hex = (v) => Math.round(v).toString(16).padStart(2, "0");
-  return `#${hex(r)}${hex(g)}${hex(b)}${a === 255 ? "" : hex(a)}`;
-}
+const hex = (v: number): string => Math.round(v).toString(16).padStart(2, "0");
+
+export const formatHex = ([r, g, b, a = 255]: readonly number[]): string =>
+  `#${hex(r)}${hex(g)}${hex(b)}${a === 255 ? "" : hex(a)}`;
 
 // Oklab per Björn Ottosson, with sRGB transfer curves.
-const toLinear = (v) =>
+const toLinear = (v: number): number =>
   v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-const fromLinear = (v) =>
+const fromLinear = (v: number): number =>
   v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
 
-/** @returns {[number, number, number]} [L 0..1, chroma, hue in degrees 0..360) */
-export function rgbToOklch(r, g, b) {
+/** [L 0..1, chroma, hue in degrees 0..360) */
+export const rgbToOklch = (r: number, g: number, b: number): Oklch => {
   const [lr, lg, lb] = [r, g, b].map((v) => toLinear(v / 255));
   const l = Math.cbrt(
     0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb
@@ -65,32 +67,33 @@ export function rgbToOklch(r, g, b) {
     C,
     C < 1e-7 ? 0 : ((Math.atan2(bb, a) * 180) / Math.PI + 360) % 360,
   ];
-}
+};
 
-const LMS_TO_LINEAR = [
+const LMS_TO_LINEAR: readonly Oklch[] = [
   [4.0767416621, -3.3077115913, 0.2309699292],
   [-1.2684380046, 2.6097574011, -0.3413193965],
   [-0.0041960863, -0.7034186147, 1.707614701],
 ];
 
-function linearFromOklch(L, C, h) {
+const linearFromOklch = (L: number, C: number, h: number): number[] => {
   const a = C * Math.cos((h * Math.PI) / 180);
   const b = C * Math.sin((h * Math.PI) / 180);
   const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
   const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
   const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
   return LMS_TO_LINEAR.map(([kl, km, ks]) => kl * l + km * m + ks * s);
-}
+};
 
-/** Colours outside sRGB keep lightness and hue and lose chroma. @returns {[number, number, number]} */
-export function oklchToRgb(L, C, h) {
+/** Colours outside sRGB keep lightness and hue and lose chroma. */
+export const oklchToRgb = (L: number, C: number, h: number): Oklch => {
   const EPS = 5e-4;
-  const inGamut = (rgb) => rgb.every((v) => v >= -EPS && v <= 1 + EPS);
+  const inGamut = (rgb: number[]): boolean =>
+    rgb.every((v) => v >= -EPS && v <= 1 + EPS);
   let rgb = linearFromOklch(L, C, h);
   if (!inGamut(rgb)) {
     let lo = 0;
     let hi = C;
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 24; i += 1) {
       const probe = (lo + hi) / 2;
       if (inGamut(linearFromOklch(L, probe, h))) {
         lo = probe;
@@ -100,33 +103,34 @@ export function oklchToRgb(L, C, h) {
     }
     rgb = linearFromOklch(L, lo, h);
   }
-  return /** @type {[number, number, number]} */ (
-    rgb.map((v) =>
-      Math.round(
-        Math.min(1, Math.max(0, fromLinear(Math.min(1, Math.max(0, v))))) * 255
-      )
+  const [r, g, b] = rgb.map((v) =>
+    Math.round(
+      Math.min(1, Math.max(0, fromLinear(Math.min(1, Math.max(0, v))))) * 255
     )
   );
-}
+  return [r, g, b];
+};
 
 /** Moves hue h towards `target` along the shorter arc, by at most `deg` degrees. */
-export function hueToward(h, target, deg) {
+export const hueToward = (h: number, target: number, deg: number): number => {
   const arc = ((target - h + 540) % 360) - 180;
   return (h + Math.sign(arc) * Math.min(Math.abs(arc), deg) + 360) % 360;
-}
+};
 
-export const SHADOW_HUE = 290; // violet: shadows cool down
-export const LIGHT_HUE = 100; // yellow: highlights warm up
+// Violet: shadows cool down.
+export const SHADOW_HUE = 290;
+// Yellow: highlights warm up.
+export const LIGHT_HUE = 100;
 
 /** `n` hex colours from dark to light; the base sits at index floor(n / 2). */
-export function rampColors(base, n, shift = 20) {
+export const rampColors = (base: string, n: number, shift = 20): string[] => {
   const baseRgba = parseHex(base);
-  const alpha = baseRgba[3];
-  const [L, C, h] = rgbToOklch(...baseRgba);
+  const { 3: alpha } = baseRgba;
+  const [L, C, h] = rgbToOklch(baseRgba[0], baseRgba[1], baseRgba[2]);
   const mid = Math.floor(n / 2);
   const darkest = L * 0.45;
   const lightest = L + (0.96 - L) * 0.75;
-  return [...Array(n).keys()].map((i) => {
+  return Array.from({ length: n }, (_, i) => {
     if (i === mid) {
       return formatHex(baseRgba);
     }
@@ -136,10 +140,14 @@ export function rampColors(base, n, shift = 20) {
     const hue = hueToward(h, below ? SHADOW_HUE : LIGHT_HUE, shift * t);
     return formatHex([...oklchToRgb(lum, C, hue), alpha]);
   });
-}
+};
 
 /** ramp("#b13e53", "rstu") gives { r, s, t, u }, dark to light. */
-export function ramp(base, keys, { hueShift = 20 } = {}) {
+export const ramp = (
+  base: string,
+  keys: string,
+  { hueShift = 20 }: { hueShift?: number } = {}
+): Palette => {
   const chars = [...String(keys)];
   const bad = chars.filter((k) => RESERVED_KEYS.has(k));
   if (bad.length) {
@@ -152,12 +160,16 @@ export function ramp(base, keys, { hueShift = 20 } = {}) {
   }
   const colors = rampColors(base, chars.length, hueShift);
   return Object.fromEntries(chars.map((k, i) => [k, colors[i]]));
-}
+};
 
 /** The palettes file: { name: { key: colour } }. A missing file is an empty set. */
-export async function loadPalettes(file) {
+export const loadPalettes = async (
+  file: string
+): Promise<Record<string, Palette>> => {
   const text = await readFile(file, "utf-8").catch((error) => {
-    if (error.code !== "ENOENT") throw error;
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
     return null;
   });
   if (text === null) {
@@ -168,10 +180,12 @@ export async function loadPalettes(file) {
   } catch {
     throw new Error(`The palettes file ${file} is not valid JSON.`);
   }
-}
+};
 
-/** @returns {Promise<Record<string, string>>} */
-export async function loadPalette(file, name) {
+export const loadPalette = async (
+  file: string,
+  name: string
+): Promise<Palette> => {
   const all = await loadPalettes(file);
   if (!Object.hasOwn(all, name)) {
     throw new Error(
@@ -179,10 +193,14 @@ export async function loadPalette(file, name) {
     );
   }
   return all[name];
-}
+};
 
-export async function savePalette(file, name, colors) {
-  const clean = {};
+export const savePalette = async (
+  file: string,
+  name: string,
+  colors: Palette
+): Promise<void> => {
+  const clean: Palette = {};
   for (const [key, color] of Object.entries(colors)) {
     if ([...key].length !== 1 || RESERVED_KEYS.has(key)) {
       throw new Error(
@@ -193,8 +211,8 @@ export async function savePalette(file, name, colors) {
   }
   const all = await loadPalettes(file);
   all[name] = clean;
-  await mkdir(dirname(file), { recursive: true });
+  await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`);
   await rename(tmp, file);
-}
+};

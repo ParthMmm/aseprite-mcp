@@ -79,9 +79,9 @@ async function toContent(envelope, inline) {
     const data = await readFile(path).catch(() => null);
     if (data) {
       content.push({
-        type: "image",
-        mimeType: "image/png",
         data: data.toString("base64"),
+        mimeType: "image/png",
+        type: "image",
       });
     }
   }
@@ -152,9 +152,10 @@ export async function startDaemon({
   const http = createServer((req, res) =>
     handle(req, res).catch((error) => {
       log("Request failed:", error.message);
-      if (!res.headersSent) sendJson(res, 500, { error: error.message });
-      else {
+      if (res.headersSent) {
         res.end();
+      } else {
+        sendJson(res, 500, { error: error.message });
       }
     })
   );
@@ -242,9 +243,9 @@ export async function startDaemon({
       body = JSON.parse(await readBody(req));
     } catch (error) {
       return sendJson(res, 400, {
-        jsonrpc: "2.0",
-        id: null,
         error: { code: -32700, message: `Parse error: ${error.message}` },
+        id: null,
+        jsonrpc: "2.0",
       });
     }
     const transport = new StreamableHTTPServerTransport({

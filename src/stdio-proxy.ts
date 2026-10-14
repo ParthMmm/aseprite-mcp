@@ -43,7 +43,9 @@ async function waitFor(check) {
     Date.now() < end;
     await sleep(POLL_MS)
   ) {
-    if (await check()) return true;
+    if (await check()) {
+      return true;
+    }
   }
   return false;
 }
@@ -87,12 +89,12 @@ export async function runProxy({ port, version, binPath, log = () => {} }) {
       log("Daemon request failed:", error.message);
       if (msg.method && msg.id !== undefined) {
         local.send({
-          jsonrpc: "2.0",
-          id: msg.id,
           error: {
             code: -32000,
             message: `aseprite-mcp daemon unreachable: ${error.message}`,
           },
+          id: msg.id,
+          jsonrpc: "2.0",
         });
       }
       ensureDaemon({ binPath, log, port, version }).catch((error) =>

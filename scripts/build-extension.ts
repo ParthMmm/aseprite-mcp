@@ -11,7 +11,7 @@ function crc32(bytes) {
   for (const byte of bytes) {
     c ^= byte;
     for (let bit = 0; bit < 8; bit++) {
-      c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+      c = (c >>> 1) ^ (0xed_b8_83_20 & -(c & 1));
     }
   }
   return ~c >>> 0;

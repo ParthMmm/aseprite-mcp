@@ -91,7 +91,9 @@ export async function loadToken({ create = true, renew = false } = {}) {
       return token;
     }
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
   }
   if (!create) {
     return null;
@@ -222,7 +224,7 @@ export function createBackups({ link, dir = AUTOSAVE_DIR, log = () => {} }) {
         const path = join(dir, folder, file);
         const info = await stat(path).catch(() => null);
         if (info?.isFile() && file.endsWith(".aseprite")) {
-          found.push({ path, t: info.mtimeMs, size: info.size });
+          found.push({ path, size: info.size, t: info.mtimeMs });
         }
       }
     }
@@ -243,16 +245,20 @@ export function createBackups({ link, dir = AUTOSAVE_DIR, log = () => {} }) {
     cleanup,
     flush: drain,
     info: () => ({
-      enabled: dir !== null,
-      dir,
-      keep: BACKUP_KEEP,
       days: BACKUP_DAYS,
+      dir,
+      enabled: dir !== null,
+      keep: BACKUP_KEEP,
       lastBackup,
       lastError,
     }),
     schedule(sprites) {
-      if (!dir || !sprites?.length) return;
-      for (const s of sprites) queue.set(s.sprite, s.name);
+      if (!dir || !sprites?.length) {
+        return;
+      }
+      for (const s of sprites) {
+        queue.set(s.sprite, s.name);
+      }
       clearTimeout(timer);
       timer = setTimeout(drain, BACKUP_DELAY_MS);
       timer.unref();
