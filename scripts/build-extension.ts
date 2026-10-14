@@ -3,22 +3,28 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const at = (path) =>
+const at = (path: string): string =>
   fileURLToPath(new URL(path, new URL("..", import.meta.url)));
 
-function crc32(bytes) {
+type Field = [width: number, value: number];
+interface ZipFile {
+  name: string;
+  data: Buffer;
+}
+
+const crc32 = (bytes: Uint8Array): number => {
   let c = ~0;
   for (const byte of bytes) {
     c ^= byte;
-    for (let bit = 0; bit < 8; bit++) {
-      c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+    for (let bit = 0; bit < 8; bit += 1) {
+      c = (c >>> 1) ^ (0xed_b8_83_20 & -(c & 1));
     }
   }
   return ~c >>> 0;
-}
+};
 
 /** Little-endian record from [byteWidth, value] pairs. */
-function record(fields) {
+const record = (fields: Field[]): Buffer => {
   const buf = Buffer.alloc(fields.reduce((n, [width]) => n + width, 0));
   let o = 0;
   for (const [width, value] of fields) {
@@ -30,24 +36,23 @@ function record(fields) {
     o += width;
   }
   return buf;
-}
+};
 
 const VERSION = 20;
 const UTF8_NAMES = 1 << 11;
 // 1980-01-01 00:00, the earliest DOS date, so every build is byte-identical.
-const STAMP = [
+const STAMP: Field[] = [
   [2, 0],
   [2, 0x21],
 ];
 
-/** @param {{ name: string, data: Buffer }[]} files */
-function storeZip(files) {
-  const body = [];
-  const directory = [];
+const storeZip = (files: ZipFile[]): Buffer => {
+  const body: Buffer[] = [];
+  const directory: Buffer[] = [];
   let offset = 0;
   for (const { name, data } of files) {
     const nameBytes = Buffer.from(name, "utf-8");
-    const shared = [
+    const shared: Field[] = [
       [2, UTF8_NAMES],
       [2, 0],
       ...STAMP,
@@ -90,11 +95,11 @@ function storeZip(files) {
     [2, 0],
   ]);
   return Buffer.concat([...body, dir, tail]);
-}
+};
 
 const files = readdirSync(at("extension"))
   .filter((name) => !name.startsWith("."))
-  .sort()
+  .toSorted()
   .map((name) => ({ data: readFileSync(at(`extension/${name}`)), name }));
 files.push({ data: readFileSync(at("LICENSE")), name: "LICENSE" });
 

@@ -2,8 +2,9 @@
 // Command line entry. No argument: the stdio proxy that MCP clients launch. Other commands manage the daemon.
 import { readFileSync } from "node:fs";
 import { env, argv, exit, stderr, stdout } from "node:process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
+import type { Program } from "../src/daemon.ts";
 import { loadToken } from "../src/files.ts";
 import { health, runProxy, shutdown } from "../src/stdio-proxy.ts";
 
@@ -13,7 +14,9 @@ const { version } = JSON.parse(
 );
 const httpPort = Number(env.ASEPRITE_MCP_HTTP_PORT) || 9124;
 const wsPort = Number(env.ASEPRITE_MCP_PORT) || 9123;
-const log = (...parts) => stderr.write(`[aseprite-mcp] ${parts.join(" ")}\n`);
+const log = (...parts: unknown[]): void => {
+  stderr.write(`[aseprite-mcp] ${parts.join(" ")}\n`);
+};
 
 const USAGE = `aseprite-mcp ${version}: let an AI assistant draw in your running Aseprite.
 
@@ -34,8 +37,8 @@ Environment:
   ASEPRITE_MCP_TOKEN      use this token instead of the token file
 `;
 
-async function serve() {
-  const program = await import(
+const serve = async (): Promise<void> => {
+  const program: Program = await import(
     env.ASEPRITE_MCP_PROGRAM
       ? pathToFileURL(env.ASEPRITE_MCP_PROGRAM).href
       : "../src/program.ts"
@@ -53,12 +56,18 @@ async function serve() {
     log(`A daemon already answers on port ${httpPort}; leaving it running.`);
     return exit(0);
   }
-  const stop = () => daemon.close().finally(() => exit(0));
+  const stop = async (): Promise<void> => {
+    try {
+      await daemon.close();
+    } finally {
+      exit(0);
+    }
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-}
+};
 
-async function status() {
+const status = async (): Promise<void> => {
   const h = await health(httpPort);
   if (!h) {
     log(
@@ -67,20 +76,21 @@ async function status() {
     return exit(1);
   }
   stdout.write(`${JSON.stringify(h, null, 2)}\n`);
-}
+};
 
-async function stop() {
+const stopDaemon = async (): Promise<void> => {
   if (!(await health(httpPort))) {
-    return stdout.write(`No daemon is running on port ${httpPort}.\n`);
+    stdout.write(`No daemon is running on port ${httpPort}.\n`);
+    return;
   }
   if (!(await shutdown(httpPort))) {
     log(`The daemon on port ${httpPort} did not accept the stop request.`);
     return exit(1);
   }
   stdout.write(`Stopped the aseprite-mcp daemon on port ${httpPort}.\n`);
-}
+};
 
-async function token(rest) {
+const token = async (rest: string[]): Promise<void> => {
   const renew = rest.includes("--new");
   stdout.write(`${await loadToken({ renew })}\n`);
   if (renew) {
@@ -88,10 +98,15 @@ async function token(rest) {
       "New token saved. Paste it into the Aseprite MCP window, and run `aseprite-mcp stop` so the daemon picks it up."
     );
   }
-}
+};
 
 const [command, ...rest] = argv.slice(2);
-const commands = { serve, status, stop, token: () => token(rest) };
+const commands: Record<string, (() => Promise<void>) | undefined> = {
+  serve,
+  status,
+  stop: stopDaemon,
+  token: () => token(rest),
+};
 
 if (command === undefined) {
   await runProxy({ binPath, log, port: httpPort, version });
