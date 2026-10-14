@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # aseprite.test.mjs needs the Aseprite app, so CI skips it.
+      - run: node --test $(ls test/*.test.mjs | grep -v '/aseprite\.test\.mjs$')
