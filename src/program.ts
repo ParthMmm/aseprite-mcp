@@ -20,6 +20,7 @@ import * as D from "./draft.ts";
 import type { CelKey, Draft } from "./draft.ts";
 import { insideAllowedDir } from "./files.ts";
 import { help } from "./help.ts";
+import type { Link } from "./link.ts";
 import * as R from "./raster.ts";
 import { composite, critiqueSheet, frameStrip, renderView } from "./render.ts";
 import { fromRgba, toRgba } from "./wire.ts";
@@ -28,13 +29,6 @@ import type { ColorMode } from "./wire.ts";
 export { DESCRIPTION } from "./help.ts";
 
 /** The daemon's connection to the Aseprite extension; replies are unchecked extension JSON. */
-export interface Link {
-  request: (
-    cmd: string,
-    args?: object,
-    blobs?: Uint8Array[]
-  ) => Promise<{ result: unknown; blobs: Uint8Array[] }>;
-}
 
 export interface Limits {
   draftBytes: number;
@@ -425,7 +419,8 @@ const realOrParent = async (abs: string): Promise<string> => {
   try {
     return await realpath(abs);
   } catch {
-    const dir = await realpath(nodePath.dirname(abs)).catch(() => abs);
+    const parent = nodePath.dirname(abs);
+    const dir = await realpath(parent).catch(() => parent);
     return nodePath.join(dir, nodePath.basename(abs));
   }
 };

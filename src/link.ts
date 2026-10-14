@@ -105,6 +105,9 @@ interface Reply {
   error?: unknown;
 }
 
+const isReply = (msg: unknown): msg is Reply =>
+  typeof msg === "object" && msg !== null && typeof (msg as { id?: unknown }).id === "number";
+
 interface Hello {
   type?: unknown;
   v?: unknown;
@@ -164,13 +167,11 @@ export const createLink = ({
     fn(entry);
   };
 
-  const onReply = ({
-    msg,
-    blobs,
-  }: {
-    msg: Reply;
-    blobs: Uint8Array[];
-  }): void => {
+  const onReply = ({ msg, blobs }: { msg: unknown; blobs: Uint8Array[] }): void => {
+    if (!isReply(msg)) {
+      log?.("Dropped a reply without a numeric id from Aseprite.");
+      return;
+    }
     settle(msg.id, (p) =>
       msg.ok
         ? p.resolve({ blobs, result: msg.result })
