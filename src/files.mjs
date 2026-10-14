@@ -10,8 +10,9 @@ export const CONFIG_DIR = join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config")
 export const TOKEN_FILE = env.ASEPRITE_MCP_TOKEN_FILE ?? join(CONFIG_DIR, "token");
 export const PALETTE_FILE = env.ASEPRITE_MCP_PALETTE_FILE ?? join(CONFIG_DIR, "palettes.json");
 
+export const SPRITES_DIR = env.ASEPRITE_MCP_SPRITES_DIR ?? join(homedir(), "Pictures", "aseprite-mcp");
 // macOS reports its temp dir as /var/folders/..., yet most tools write to /tmp.
-const DEFAULT_DIRS = platform() === "win32" ? [tmpdir()] : [tmpdir(), "/tmp"];
+const DEFAULT_DIRS = [SPRITES_DIR, tmpdir(), ...(platform() === "win32" ? [] : ["/tmp"])];
 export const DEFAULT_FILE_DIRS = DEFAULT_DIRS.join(delimiter);
 export const FILE_DIRS = [...new Set((env.ASEPRITE_MCP_FILE_DIRS ?? DEFAULT_FILE_DIRS).split(delimiter).filter(Boolean))];
 

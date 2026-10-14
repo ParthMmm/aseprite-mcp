@@ -6,7 +6,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { createLink } from "./link.mjs";
-import { AUTOSAVE_DIR, FILE_DIRS, PALETTE_FILE, VIEWS_DIR, createBackups, loadToken, pruneViews } from "./files.mjs";
+import { AUTOSAVE_DIR, FILE_DIRS, PALETTE_FILE, SPRITES_DIR, VIEWS_DIR, createBackups, loadToken, pruneViews } from "./files.mjs";
 
 const HOST = "127.0.0.1";
 const MAX_BODY = 16 * 1024 * 1024;
@@ -102,7 +102,7 @@ export async function startDaemon({ program, version, httpPort, wsPort, onShutdo
     const backups = createBackups({ link, log });
     setTimeout(() => backups.cleanup(), 2000).unref();
     await mkdir(VIEWS_DIR, { recursive: true });
-    const runtime = program.createRuntime({ link, viewsDir: VIEWS_DIR, palettesFile: PALETTE_FILE, allowedDirs: FILE_DIRS, limits: {} });
+    const runtime = program.createRuntime({ link, viewsDir: VIEWS_DIR, palettesFile: PALETTE_FILE, spritesDir: SPRITES_DIR, allowedDirs: FILE_DIRS, limits: {} });
     const execute = async (code) => {
       const envelope = await runtime.execute(code);
       backups.schedule(envelope.commit ?? []);

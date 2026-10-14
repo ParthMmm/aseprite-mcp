@@ -20,7 +20,7 @@ Sprite { id, name, width, height, colorMode
   commit(label?): Promise<{ label, cels, pixels, merged, lost }>  // checkpoint now
   undo(n = 1): Promise<void>; redo(n = 1): Promise<void>
   changes(): Promise<{ layer, frame, rect, palette, rows }[]>  // the artist's edits since you last looked
-  save(path?): Promise<string> }
+  save(nameOrPath?): Promise<string> }  // save("slime") -> ~/Pictures/aseprite-mcp/slime.aseprite
 Cel { layer, frame
   map(palette, rows, o?: { x?, y?, flip?: "h"|"v"|"hv" }): number  // one char per pixel; "." and " " skip; "#00000000" erases
   px(points: [x, y, color][]): number; line(x0, y0, x1, y1, color): number
@@ -98,9 +98,10 @@ const TOPICS = {
   files: `Files
 - sprite({ open: "/abs/path.aseprite" }) opens a file; sprite({ new: [32, 32] }) creates a sprite.
   sprite({ id }) or sprite({ name }) picks an open sprite; sprites() lists them.
-- Paths must be absolute (or start with ~) and inside the folders the user allowed.
-- await s.save() saves to the sprite's file; s.save("/abs/out.aseprite") saves as a new file. Pending edits
-  are committed first. Export with a .png or .gif path.
+- A bare name such as "slime" or "slime.png" means the sprites folder (default ~/Pictures/aseprite-mcp).
+  Other paths must be absolute (or start with ~) and inside the folders the user allowed.
+- await s.save("slime") saves a new sprite there; await s.save() saves to the sprite's own file again.
+  Pending edits are committed first. Export with a .png or .gif name.
 - Lost or unsaved work: the daemon keeps automatic backup copies after each commit.
 - Keep sprites small: 16x16 to 64x64 is typical pixel art.`,
 };

@@ -3,7 +3,7 @@
 // closures; mutable state is behind methods because codemode copies plain fields once at the boundary.
 import { mkdir, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { CodeMode, Extension } from "@opencode/codemode";
 import { Effect } from "effect";
 import { ramp, loadPalette, savePalette } from "./color.mjs";
@@ -70,7 +70,7 @@ function diffRect(a, b, w, h) {
 /**
  * @param {{ link: import("./link.mjs").Link, viewsDir: string, palettesFile: string, allowedDirs: string[], limits?: object }} o
  */
-export function createRuntime({ link, viewsDir, palettesFile, allowedDirs = [], limits = {} }) {
+export function createRuntime({ link, viewsDir, palettesFile, spritesDir = null, allowedDirs = [], limits = {} }) {
   const lim = { ...DEFAULT_LIMITS, ...limits };
   /** sprite id -> cel key -> RGBA this daemon last saw in Aseprite (for changes()). */
   const lastSeen = new Map();
@@ -81,7 +81,11 @@ export function createRuntime({ link, viewsDir, palettesFile, allowedDirs = [], 
   // Symlinks are resolved first, so a link inside an allowed folder cannot reach outside it.
   async function allowedPath(p) {
     if (typeof p !== "string" || !p) throw new Error("Pass a file path as a string.");
-    if (!isAbsolute(p) && !p.startsWith("~")) throw new Error(`'${p}' is relative; pass an absolute path.`);
+    if (spritesDir && /^[^/\\~]+$/.test(p)) {
+      await mkdir(spritesDir, { recursive: true });
+      p = join(spritesDir, extname(p) ? p : `${p}.aseprite`);
+    }
+    if (!isAbsolute(p) && !p.startsWith("~")) throw new Error(`'${p}' is relative; pass a name such as "slime" or an absolute path.`);
     const abs = resolve(p.replace(/^~(?=\/|$)/, homedir()));
     const real = await realpath(abs).catch(async () => join(await realpath(dirname(abs)).catch(() => abs), basename(abs)));
     if (!(await insideAllowedDir(real, allowedDirs))) throw new Error(`'${abs}' is outside the allowed folders: ${allowedDirs.join(", ") || "(none configured)"}.`);

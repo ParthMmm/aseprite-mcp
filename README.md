@@ -90,6 +90,14 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.parthmmm.aseprite-mc
 
 After you update the code, restart it with `launchctl kickstart -k gui/$(id -u)/com.parthmmm.aseprite-mcp`. Aseprite reconnects by itself.
 
+### macOS: keep Aseprite awake
+
+macOS App Nap slows apps that sit in the background, and Aseprite then stalls saves until you bring it to the front. Turn App Nap off for Aseprite once, then restart Aseprite:
+
+```sh
+defaults write org.aseprite.Aseprite NSAppSleepDisabled -bool YES
+```
+
 ### Settings
 
 Set these environment variables for the daemon.
@@ -102,7 +110,8 @@ Set these environment variables for the daemon.
 | `ASEPRITE_MCP_TOKEN` | Token file |
 | `ASEPRITE_MCP_TOKEN_FILE` | `~/.config/aseprite-mcp/token` |
 | `ASEPRITE_MCP_PALETTE_FILE` | `~/.config/aseprite-mcp/palettes.json` |
-| `ASEPRITE_MCP_FILE_DIRS` | The temporary directories |
+| `ASEPRITE_MCP_SPRITES_DIR` | `~/Pictures/aseprite-mcp`, where `s.save("name")` writes |
+| `ASEPRITE_MCP_FILE_DIRS` | The sprites folder and the temporary directories |
 | `ASEPRITE_MCP_VIEWS_DIR` | The user cache directory |
 | `ASEPRITE_MCP_AUTOSAVE` | `~/.config/aseprite-mcp/autosave`, or `off` |
 | `ASEPRITE_MCP_AUTOSAVE_KEEP` | `5` copies per sprite |
@@ -156,7 +165,7 @@ Rules:
 
 - The daemon listens on loopback addresses only (`127.0.0.1`).
 - Aseprite and the daemon pair with a shared token. Each side proves it knows the token with an HMAC-SHA256 exchange, and the extension checks the server too. The token never crosses the connection.
-- A program can read and write files only inside the allowed folders. The default is the temporary directories. Set `ASEPRITE_MCP_FILE_DIRS` to change it.
+- A program can read and write files only inside the allowed folders: by default `~/Pictures/aseprite-mcp` and the temporary directories. Set `ASEPRITE_MCP_FILE_DIRS` to change it.
 - Each program runs in a sandboxed interpreter. Defaults: 60 seconds, 64,000 bytes of output, 10,000 tool calls and a 64 MB draft.
 - The daemon saves backup copies after each commit and removes old ones by count, age and size.
 
