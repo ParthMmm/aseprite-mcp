@@ -5,9 +5,10 @@ export const DESCRIPTION = `Draw pixel art live in the user's Aseprite by runnin
 Globals:
 sprite(o?: { new?: [w, h]; colorMode?: "rgb"|"indexed"|"gray"; open?: path; id?: number; name?: string }): Promise<Sprite>  // no args = the active sprite
 sprites(): Promise<{ id, name, width, height, frames, active }[]>
+image(path): Promise<Image>  // load a PNG reference: Image { image, width, height, read(o?), colors(max = 32), downscale(factor) }
 ramp(base: string, keys: string, o?: { hueShift?: number }): Record<string, string>  // OKLCH shades, dark to light, one per key
 palette(name, colors?): Promise<Record<string, string>>  // load, or save with colors, a named palette
-help(topic?): string  // topics: maps, animation, critique, conflicts, files
+help(topic?): string  // topics: maps, animation, critique, conflicts, files, export
 
 Sprite { id, name, width, height, colorMode
   layers(): string[]  // paths, bottom to top; "group/child"
@@ -20,13 +21,15 @@ Sprite { id, name, width, height, colorMode
   commit(label?): Promise<{ label, cels, pixels, merged, lost }>  // checkpoint now
   undo(n = 1): Promise<void>; redo(n = 1): Promise<void>
   changes(): Promise<{ layer, frame, rect, palette, rows }[]>  // the artist's edits since you last looked
-  save(nameOrPath?): Promise<string> }  // save("slime") -> ~/Pictures/aseprite-mcp/slime.aseprite
+  save(nameOrPath?): Promise<string>  // save("slime") -> ~/Pictures/aseprite-mcp/slime.aseprite
+  export(name, o?: { scale?, tag?, sheet? = true, gif?, columns? }): Promise<{ sheet?, json?, gif?, frames, width, height }> }  // sprite sheet PNG + JSON, GIF
 Cel { layer, frame
   map(palette, rows, o?: { x?, y?, flip?: "h"|"v"|"hv" }): number  // one char per pixel; "." and " " skip; "#00000000" erases
   px(points: [x, y, color][]): number; line(x0, y0, x1, y1, color): number
   rect(r, color, o?: { fill? }): number; ellipse(r, color, o?: { fill? }): number; fill(x, y, color): number
   outline(color?, o?: { mode?: "selective"|"outside"|"inside"; rect? }): number  // selective needs no colour
-  shift(dx, dy, o?: { rect? }): number; copy(from: Cel, o?: { rect?, x?, y?, flip? }): number
+  shift(dx, dy, o?: { rect? }): number
+  copy(from: { layer, frame?, sprite? } | { image: img.image }, o?: { rect?, x?, y?, flip? }): number  // not the handle itself
   recolor(map: { "#from": "#to" }, o?: { rect? }): number; clear(r?): number
   read(o?: { rect?; palette? }): { palette, rows } }  // same format as map; pass your palette to keep its keys
 Rect = [x, y, w, h] | "selection". Colours are "#rgb", "#rrggbb" or "#rrggbbaa". Drawing methods return pixels changed.
@@ -48,7 +51,13 @@ c.map(P, ["..tt", ".tsst"], { x: 12, y: 10 })
 c.outline()
 return await s.view({ critique: true })`;
 
-type HelpTopic = "animation" | "conflicts" | "critique" | "files" | "maps";
+type HelpTopic =
+  | "animation"
+  | "conflicts"
+  | "critique"
+  | "export"
+  | "files"
+  | "maps";
 
 const TOPICS: Record<HelpTopic, string> = {
   animation: `Animation
@@ -84,13 +93,33 @@ const TOPICS: Record<HelpTopic, string> = {
   selective mode derives a darker, cooler edge from each neighbour. Draw flat shapes first, then shading,
   then highlights, then outline.`,
 
+  export: `Export and reference images
+- await s.export("slime", { scale: 4, gif: true }) writes slime.png (the sprite sheet), slime.json and slime.gif
+  next to each other; a name such as "slime" or "slime.png" means the sprites folder. Pending edits are committed
+  first. It returns { sheet, json, gif, frames, width, height }: absolute paths, the frame count and one frame's
+  size in the output.
+- Each frame is the visible layers composited at their opacity, scaled up by scale (whole number, nearest
+  neighbour). The sheet puts frames left to right in one row; columns: 4 wraps it into a grid.
+- tag: "idle" exports only that tag's frames. sheet: false skips the PNG and JSON.
+- The JSON lists frames ({ x, y, w, h, duration } in ms), tags ({ name, from, to, direction }), size and scale.
+- The GIF loops, keeps each frame's duration (rounded to 10 ms, at least 20 ms) and has one transparent colour:
+  alpha below 128 becomes transparent. More than 255 colours is an error; use fewer colours or the sheet only.
+- const ref = await image("ref.png") loads a PNG from the sprites folder or an absolute path (8-bit, not
+  interlaced). ref.width, ref.height; ref.colors(16) lists its most common colours as hex, for a palette.
+- ref.read({ rect, palette }) returns palette + rows like cel.read. ref.downscale(4) returns a new image at
+  1/4 size, each 4x4 block becoming its most common colour: use it on art drawn at 4x or 6x.
+- c.copy({ image: ref.image }, { rect: [0, 0, 16, 16], x: 8, y: 8 }) pastes the image, or a rect of it, into a
+  cel. Pass { image: ref.image }, not ref: a handle cannot be an argument. The same goes for cels:
+  c.copy({ layer: "body", frame: 2 }) copies another cel; add sprite: id for another open sprite.`,
+
   files: `Files
 - sprite({ open: "/abs/path.aseprite" }) opens a file; sprite({ new: [32, 32] }) creates a sprite.
   sprite({ id }) or sprite({ name }) picks an open sprite; sprites() lists them.
 - A bare name such as "slime" or "slime.png" means the sprites folder (default ~/Pictures/aseprite-mcp).
   Other paths must be absolute (or start with ~) and inside the folders the user allowed.
 - await s.save("slime") saves a new sprite there; await s.save() saves to the sprite's own file again.
-  Pending edits are committed first. Export with a .png or .gif name.
+  Pending edits are committed first. save("slime.png") writes one PNG per frame; s.export() writes a
+  sprite sheet, its JSON and a GIF (see help("export")).
 - Lost or unsaved work: the daemon keeps automatic backup copies after each commit.
 - Keep sprites small: 16x16 to 64x64 is typical pixel art.`,
 
@@ -115,6 +144,7 @@ const TOPIC_ORDER: readonly HelpTopic[] = [
   "critique",
   "conflicts",
   "files",
+  "export",
 ];
 
 const isTopic = (key: string): key is HelpTopic => Object.hasOwn(TOPICS, key);

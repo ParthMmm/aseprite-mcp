@@ -1,8 +1,9 @@
 // The code-mode runtime: one execute() runs one agent program against per-sprite Drafts, then commits what is
-// left as one undo step per sprite. Globals: sprite, sprites, ramp, palette, help. Handles are plain objects of
+// left as one undo step per sprite. Globals: sprite, sprites, image, ramp, palette, help. Handles are plain objects of
 // closures; mutable state is behind methods because codemode copies plain fields once at the boundary.
 import {
   mkdir,
+  readFile,
   readdir,
   realpath,
   stat,
@@ -22,7 +23,17 @@ import { insideAllowedDir } from "./files.ts";
 import { help } from "./help.ts";
 import type { Link } from "./link.ts";
 import * as R from "./raster.ts";
-import { composite, critiqueSheet, frameStrip, renderView } from "./render.ts";
+import {
+  composite,
+  critiqueSheet,
+  decodePng,
+  encodeGif,
+  encodePng,
+  frameStrip,
+  gridSheet,
+  renderView,
+  upscale,
+} from "./render.ts";
 import { fromRgba, toRgba } from "./wire.ts";
 import type { ColorMode } from "./wire.ts";
 
@@ -61,11 +72,43 @@ export interface CommitInfo {
 type RectArg = R.Rect | "selection";
 type WithRect<O> = Omit<O, "rect"> & { rect?: RectArg };
 
-/** What a program passes as `from` to copy(): a cel handle after codemode copied its plain fields. */
+/**
+ * What a program passes as `from` to copy(): { layer, frame?, sprite? } or { image }. Handles themselves cannot
+ * cross back into a host call because codemode refuses arguments that hold functions.
+ */
 interface CelRef {
   layer?: string;
   frame?: number;
   sprite?: number;
+  image?: number;
+}
+
+/** A PNG loaded by image(); `image` indexes the run's loaded pictures. */
+export interface ImageHandle {
+  image: number;
+  width: number;
+  height: number;
+  colors: (max?: number) => string[];
+  downscale: (factor: number) => ImageHandle;
+  read: (o?: R.ReadOptions) => R.PixelRows;
+}
+
+export interface ExportOptions {
+  scale?: number;
+  tag?: string;
+  sheet?: boolean;
+  gif?: boolean;
+  columns?: number;
+}
+
+/** Absolute paths of the files written; width and height are one frame's size in them. */
+export interface ExportResult {
+  sheet?: string;
+  json?: string;
+  gif?: string;
+  frames: number;
+  width: number;
+  height: number;
 }
 
 export interface CelHandle {
@@ -132,6 +175,7 @@ export interface SpriteHandle {
   cels: (layer: string) => CelHandle[];
   changes: () => Promise<ArtistChange[]>;
   commit: (label?: unknown) => Promise<CommitInfo>;
+  export: (nameOrPath: unknown, o?: ExportOptions) => Promise<ExportResult>;
   frames: () => number;
   layer: (name: string, o?: D.LayerOptions) => void;
   layers: () => string[];
@@ -157,6 +201,8 @@ interface SpriteState {
 
 interface Run {
   states: Map<number, SpriteState>;
+  /** Pictures loaded by image() in this run, indexed by ImageHandle.image. */
+  loaded: R.Canvas[];
   images: string[];
   commits: CommitInfo[];
 }
@@ -377,9 +423,20 @@ const celHandle = (
   return {
     clear: (r) => R.clear(cv(), r === undefined ? undefined : rectOf(st.d, r)),
     copy: (from, o) => {
+      if (from?.image !== undefined) {
+        const picture = run.loaded[from.image];
+        if (!picture || o?.rect === "selection") {
+          throw new Error(
+            "copy: pass { image: img.image } for an image from image(path); rect is [x, y, w, h] in the image."
+          );
+        }
+        return R.copy(cv(), picture, { ...o, rect: o?.rect });
+      }
       const src = from?.sprite === undefined ? st : run.states.get(from.sprite);
       if (!src || typeof from?.layer !== "string") {
-        throw new Error("copy: pass a cel from s.cel(layer, frame).");
+        throw new Error(
+          "copy: pass { layer, frame } (add sprite: id for another sprite) or { image: img.image }."
+        );
       }
       const dst = cv();
       const data = D.readable(src.d, from.layer, from.frame ?? 0);
@@ -414,6 +471,49 @@ const celHandle = (
   };
 };
 
+const imageHandle = (run: Run, picture: R.Canvas): ImageHandle => {
+  run.loaded.push(picture);
+  return {
+    colors: (max) => R.colors(picture, max),
+    downscale: (factor) => imageHandle(run, R.downscale(picture, factor)),
+    height: picture.height,
+    image: run.loaded.length - 1,
+    read: (o) => R.read(picture, o),
+    width: picture.width,
+  };
+};
+
+const wholeOption = (
+  name: string,
+  value: unknown,
+  fallback: number
+): number => {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `export: ${name} must be a whole number >= 1, got ${JSON.stringify(value)}.`
+    );
+  }
+  return value;
+};
+
+/** Frame range of the whole sprite, or of one tag. */
+const exportRange = (d: Draft, tag: unknown): { from: number; to: number } => {
+  if (tag === undefined) {
+    return { from: 0, to: d.structure.durations.length - 1 };
+  }
+  const found = d.structure.tags.find((t) => t.name === tag);
+  if (!found) {
+    const names = d.structure.tags.map((t) => t.name);
+    throw new Error(
+      `export: no tag '${String(tag)}'. Tags: ${names.join(", ") || "none"}.`
+    );
+  }
+  return found;
+};
+
 // Resolves symlinks, falling back to the parent folder for a file that does not exist yet.
 const realOrParent = async (abs: string): Promise<string> => {
   try {
@@ -441,7 +541,10 @@ export const createRuntime = ({
   let viewSeq = 0;
 
   // Symlinks are resolved first, so a link inside an allowed folder cannot reach outside it.
-  const allowedPath = async (p: unknown): Promise<string> => {
+  const allowedPath = async (
+    p: unknown,
+    defaultExt = ".aseprite"
+  ): Promise<string> => {
     if (typeof p !== "string" || !p) {
       throw new Error("Pass a file path as a string.");
     }
@@ -450,7 +553,7 @@ export const createRuntime = ({
       await mkdir(spritesDir, { recursive: true });
       target = nodePath.join(
         spritesDir,
-        nodePath.extname(target) ? target : `${target}.aseprite`
+        nodePath.extname(target) ? target : `${target}${defaultExt}`
       );
     }
     if (!nodePath.isAbsolute(target) && !target.startsWith("~")) {
@@ -640,6 +743,85 @@ export const createRuntime = ({
     return { height: out.height, path, width: out.width };
   };
 
+  /** Writes <name>.png + <name>.json (the sheet) and/or <name>.gif, only after every part encoded. */
+  const exportSprite = async (
+    run: Run,
+    st: SpriteState,
+    nameOrPath: unknown,
+    o: ExportOptions = {}
+  ): Promise<ExportResult> => {
+    if (typeof nameOrPath !== "string" || !nameOrPath) {
+      throw new Error(
+        'export: pass a name such as "slime" or an absolute path.'
+      );
+    }
+    const { sheet = true, gif = false } = o;
+    if (!sheet && !gif) {
+      throw new Error(
+        "export: sheet and gif are both false; nothing to write."
+      );
+    }
+    const scale = wholeOption("scale", o.scale, 1);
+    const base = nameOrPath.slice(
+      0,
+      nameOrPath.length - nodePath.extname(nameOrPath).length
+    );
+    const pathFor = (ext: string) => allowedPath(`${base}${ext}`);
+    const sheetPaths = sheet
+      ? { json: await pathFor(".json"), png: await pathFor(".png") }
+      : null;
+    const gifPath = gif ? await pathFor(".gif") : null;
+    const files: [string, Buffer | string][] = [];
+    await commitDraft(run, st, AUTO_LABEL);
+    const { d } = st;
+    const { durations, tags } = d.structure;
+    const { from, to } = exportRange(d, o.tag);
+    const indices = Array.from({ length: to - from + 1 }, (_, n) => from + n);
+    const frames = indices.map((f) => upscale(flatten(d, f), scale));
+    const [{ width, height }] = frames;
+    const out: ExportResult = { frames: frames.length, height, width };
+    if (sheetPaths) {
+      const { png, json } = sheetPaths;
+      const columns = wholeOption("columns", o.columns, frames.length);
+      const { sheet: cv, cells } = gridSheet(frames, columns);
+      out.sheet = png;
+      out.json = json;
+      const data = {
+        frames: cells.map(([x, y], n) => ({
+          duration: durations[indices[n]],
+          h: height,
+          w: width,
+          x,
+          y,
+        })),
+        image: nodePath.basename(png),
+        scale,
+        size: { h: cv.height, w: cv.width },
+        tags: tags
+          .filter((t) => t.from >= from && t.to <= to)
+          .map((t) => ({
+            direction: t.direction,
+            from: t.from - from,
+            name: t.name,
+            to: t.to - from,
+          })),
+      };
+      files.push(
+        [png, encodePng(cv.width, cv.height, cv.data)],
+        [json, `${JSON.stringify(data, null, 2)}\n`]
+      );
+    }
+    if (gifPath) {
+      const delays = indices.map((f) =>
+        Math.max(2, Math.round(durations[f] / 10))
+      );
+      out.gif = gifPath;
+      files.push([gifPath, encodeGif(frames, delays)]);
+    }
+    await Promise.all(files.map(([abs, body]) => writeFile(abs, body)));
+    return out;
+  };
+
   const history = async (
     st: SpriteState,
     action: "undo" | "redo",
@@ -714,6 +896,7 @@ export const createRuntime = ({
           pixels: 0,
           sprite: id,
         },
+      export: (nameOrPath, o) => exportSprite(run, st, nameOrPath, o),
       frames: () => st.d.structure.durations.length,
       height,
       id,
@@ -779,6 +962,16 @@ export const createRuntime = ({
 
   const globals = (run: Run) => ({
     help: (topic?: unknown) => help(topic),
+    async image(path: unknown): Promise<ImageHandle> {
+      const abs = await allowedPath(path, ".png");
+      try {
+        return imageHandle(run, decodePng(await readFile(abs)));
+      } catch (error) {
+        throw new Error(`image('${abs}'): ${messageOf(error)}`, {
+          cause: error,
+        });
+      }
+    },
     palette: (name: string, colors?: Record<string, string>) =>
       colors === undefined
         ? loadPalette(palettesFile, name)
@@ -843,7 +1036,12 @@ export const createRuntime = ({
 
   const execute = async (code: string): Promise<ExecuteResult> => {
     const t0 = Date.now();
-    const run: Run = { commits: [], images: [], states: new Map() };
+    const run: Run = {
+      commits: [],
+      images: [],
+      loaded: [],
+      states: new Map(),
+    };
     const done = <E extends object>(e: E) => ({ ...e, ms: Date.now() - t0 });
     let r: CodeMode.Result;
     try {

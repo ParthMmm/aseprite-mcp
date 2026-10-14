@@ -127,6 +127,7 @@ Globals:
 ```text
 sprite(o?: { new?: [w, h]; colorMode?: "rgb"|"indexed"|"gray"; open?: path; id?: number; name?: string }): Promise<Sprite>
 sprites(): Promise<{ id, name, width, height, frames, active }[]>
+image(path): Promise<Image>
 ramp(base: string, keys: string, o?: { hueShift?: number }): Record<string, string>
 palette(name, colors?): Promise<Record<string, string>>
 help(topic?): string
@@ -135,9 +136,10 @@ help(topic?): string
 - `sprite()` with no arguments returns the active sprite.
 - `ramp` makes OKLCH shades, dark to light, one per key.
 - `palette` loads a named palette, or saves it when you pass colors.
-- `help` has the topics `maps`, `animation`, `critique`, `conflicts` and `files`.
+- `image` loads a PNG as pixels. See [Sprite sheets, GIFs and reference images](#sprite-sheets-gifs-and-reference-images).
+- `help` has the topics `maps`, `animation`, `critique`, `conflicts`, `files` and `export`.
 
-A `Sprite` has `layers()`, `frames()`, `selection()`, `cel(layer, frame)`, `cels(layer)`, `layer(name, opts)`, `setFrames(count, opts)`, `tag(name, from, to, opts)`, `view(opts)`, `commit(label)`, `undo(n)`, `redo(n)`, `changes()` and `save(path)`.
+A `Sprite` has `layers()`, `frames()`, `selection()`, `cel(layer, frame)`, `cels(layer)`, `layer(name, opts)`, `setFrames(count, opts)`, `tag(name, from, to, opts)`, `view(opts)`, `commit(label)`, `undo(n)`, `redo(n)`, `changes()`, `save(path)` and `export(name, opts)`.
 
 A `Cel` has `map`, `px`, `line`, `rect`, `ellipse`, `fill`, `outline`, `shift`, `copy`, `recolor`, `clear` and `read`. Drawing methods return the number of pixels changed.
 
@@ -160,6 +162,23 @@ Rules:
 - Do not loop over single pixels in JavaScript. Use `map`, `rect`, `fill` and `shift`.
 - Return only what you need, such as counts or a few rows.
 - `view()` writes a PNG and returns its path. With `critique: true`, the image shows color, grayscale values, silhouette and true size.
+
+### Sprite sheets, GIFs and reference images
+
+`s.export(name, opts)` writes a sprite sheet and an animated GIF for apps and previews. A bare name such as `"slime"` goes to the sprites folder.
+
+```js
+const s = await sprite();
+return await s.export("slime", { scale: 4, gif: true, columns: 4 });
+// { sheet: ".../slime.png", json: ".../slime.json", gif: ".../slime.gif", frames: 8, width: 192, height: 192 }
+```
+
+- `slime.png` holds every frame, composited from the visible layers and scaled up by `scale` with nearest-neighbor sampling. Frames run left to right; `columns` wraps them into a grid.
+- `slime.json` gives each frame's `x`, `y`, `w`, `h` and `duration` in milliseconds, the tags with `from`, `to` and `direction`, the sheet `size` and the `scale`.
+- `slime.gif` loops and keeps the frame durations. It has one transparent color and at most 255 other colors.
+- `tag: "idle"` exports only that tag's frames. `sheet: false` writes only the GIF.
+
+`image(path)` loads a PNG, such as a reference drawing, as pixels. It returns `{ image, width, height }` with `read(opts)`, `colors(max)` and `downscale(factor)`. `downscale(4)` turns art drawn at 4x back into one pixel per block. To paste it into a cel, pass its id: `c.copy({ image: ref.image }, { x: 8, y: 8 })`. The decoder reads 8-bit PNGs and palette PNGs; it refuses interlaced and 16-bit files.
 
 ## Safety
 

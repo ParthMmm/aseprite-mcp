@@ -662,3 +662,86 @@ export const read = (
   }
   return { palette, rows };
 };
+
+const tally = (counts: Map<number, number>, key: number): void => {
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+};
+
+/** The colour with the highest count; the first one seen wins a tie. */
+const mostCommon = (counts: Map<number, number>): number => {
+  let best = 0;
+  let bestCount = 0;
+  for (const [key, count] of counts) {
+    if (count > bestCount) {
+      best = key;
+      bestCount = count;
+    }
+  }
+  return best;
+};
+
+/**
+ * Shrink by a whole factor: each factor x factor block becomes its most common visible colour, or transparent when
+ * the block has none. Partial blocks at the right and bottom edges count too.
+ */
+export const downscale = (cv: Canvas, factor: number): Canvas => {
+  if (!Number.isInteger(factor) || factor < 1) {
+    throw new Error(
+      `downscale(factor): factor must be a whole number >= 1, got ${factor}.`
+    );
+  }
+  const out = blank(
+    Math.ceil(cv.width / factor),
+    Math.ceil(cv.height / factor)
+  );
+  const counts = new Map<number, number>();
+  for (let by = 0; by < out.height; by += 1) {
+    for (let bx = 0; bx < out.width; bx += 1) {
+      counts.clear();
+      const y1 = Math.min(cv.height, (by + 1) * factor);
+      const x1 = Math.min(cv.width, (bx + 1) * factor);
+      for (let y = by * factor; y < y1; y += 1) {
+        for (let x = bx * factor; x < x1; x += 1) {
+          const key = keyAt(cv.data, (y * cv.width + x) * 4);
+          if (key !== 0) {
+            tally(counts, key);
+          }
+        }
+      }
+      const key = mostCommon(counts);
+      const o = (by * out.width + bx) * 4;
+      out.data[o] = key >>> 24;
+      out.data[o + 1] = (key >>> 16) & 0xff;
+      out.data[o + 2] = (key >>> 8) & 0xff;
+      out.data[o + 3] = key & 0xff;
+    }
+  }
+  return out;
+};
+
+/** Distinct visible colours, most frequent first, at most `max`. */
+export const colors = (cv: Canvas, max = 32): string[] => {
+  if (!Number.isInteger(max) || max < 1) {
+    throw new Error(
+      `colors(max): max must be a whole number >= 1, got ${max}.`
+    );
+  }
+  const counts = new Map<number, number>();
+  for (let i = 0; i < cv.data.length; i += 4) {
+    const key = keyAt(cv.data, i);
+    if (key !== 0) {
+      tally(counts, key);
+    }
+  }
+  return [...counts]
+    .toSorted((a, b) => b[1] - a[1])
+    .slice(0, max)
+    .map(([key]) =>
+      formatHex([
+        key >>> 24,
+        (key >>> 16) & 0xff,
+        (key >>> 8) & 0xff,
+        key & 0xff,
+      ])
+    );
+};
