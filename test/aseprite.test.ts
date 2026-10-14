@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import nodePath from "node:path";
 import { after, describe, test } from "node:test";
 
 import { decodeFrame, encodeFrame } from "../src/wire.ts";
@@ -25,11 +25,11 @@ interface LuaResult {
   [key: string]: unknown;
 }
 
-function runAseprite(): { dir: string; result: LuaResult } {
-  const dir = mkdtempSync(join(tmpdir(), "aseprite-mcp-lua-"));
-  const out = join(dir, "result.json");
+const runAseprite = (): { dir: string; result: LuaResult } => {
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "aseprite-mcp-lua-"));
+  const out = nodePath.join(dir, "result.json");
   writeFileSync(
-    join(dir, "node-frame.bin"),
+    nodePath.join(dir, "node-frame.bin"),
     encodeFrame(
       { args: { list: [1, true], n: -2.5, text: 'é "q"\n' }, cmd: "x", id: 7 },
       [Uint8Array.of(1, 2, 3), new Uint8Array(0)]
@@ -40,13 +40,13 @@ function runAseprite(): { dir: string; result: LuaResult } {
     [
       "-b",
       "--script-param",
-      `ext=${join(here, "..", "extension")}`,
+      `ext=${nodePath.join(here, "..", "extension")}`,
       "--script-param",
       `dir=${dir}`,
       "--script-param",
       `out=${out}`,
       "--script",
-      join(here, "aseprite-handlers.lua"),
+      nodePath.join(here, "aseprite-handlers.lua"),
     ],
     { encoding: "utf-8", timeout: 60_000 }
   );
@@ -55,7 +55,7 @@ function runAseprite(): { dir: string; result: LuaResult } {
     `Aseprite wrote no results (status ${run.status}):\n${run.stdout}\n${run.stderr}`
   );
   return { dir, result: JSON.parse(readFileSync(out, "utf-8")) };
-}
+};
 
 describe("extension handlers in Aseprite", { skip }, () => {
   const { dir, result } = skip
@@ -95,7 +95,7 @@ describe("extension handlers in Aseprite", { skip }, () => {
 
   test("Node decodes the binary frame Lua encoded", () => {
     const { msg, blobs } = decodeFrame(
-      readFileSync(join(dir, "lua-frame.bin"))
+      readFileSync(nodePath.join(dir, "lua-frame.bin"))
     );
     assert.deepEqual(msg, {
       id: 9,

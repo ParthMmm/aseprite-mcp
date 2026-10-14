@@ -111,7 +111,7 @@ export function createFakeLink(): FakeLink {
     return found;
   };
 
-  function applyOp(s: State, op: Op) {
+  const applyOp = (s: State, op: Op) => {
     const find = (path: string): FakeLayer => {
       const l = s.layers.find((x) => x.path === path);
       if (!l) {
@@ -208,7 +208,7 @@ export function createFakeLink(): FakeLink {
         throw new Error(`unknown op ${(op as { op: string }).op}`);
       }
     }
-  }
+  };
 
   const handlers = {
     commit(

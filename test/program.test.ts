@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import nodePath from "node:path";
 import { test } from "node:test";
 
 import { help } from "../src/help.ts";
@@ -14,27 +14,27 @@ import type {
 import { createFakeLink, pixel } from "./fake-link.ts";
 import type { FakeLink } from "./fake-link.ts";
 
-function pass(r: ExecuteResult): ExecuteSuccess {
+const pass = (r: ExecuteResult): ExecuteSuccess => {
   assert.equal(r.ok, true, JSON.stringify(r.ok ? null : r.error));
   return r as ExecuteSuccess;
-}
+};
 
-function fail(r: ExecuteResult): ExecuteFailure {
+const fail = (r: ExecuteResult): ExecuteFailure => {
   assert.equal(r.ok, false);
   return r as ExecuteFailure;
-}
+};
 
-async function setup() {
-  const dir = await mkdtemp(join(tmpdir(), "aseprite-mcp-program-"));
+const setup = async () => {
+  const dir = await mkdtemp(nodePath.join(tmpdir(), "aseprite-mcp-program-"));
   const link = createFakeLink();
   const runtime = createRuntime({
     allowedDirs: [dir],
     link,
-    palettesFile: join(dir, "palettes.json"),
-    viewsDir: join(dir, "views"),
+    palettesFile: nodePath.join(dir, "palettes.json"),
+    viewsDir: nodePath.join(dir, "views"),
   });
   return { dir, link, run: (code: string) => runtime.execute(code) };
-}
+};
 
 const cel = (link: FakeLink, id: number, layer = "Layer 1", frame = 0) =>
   link.sprite(id).state.cels.get(`${layer}@${frame}`);
@@ -272,9 +272,9 @@ test("program errors name what exists", async () => {
 
 test("a symlink inside an allowed folder cannot reach outside it", async () => {
   const { dir, run } = await setup();
-  await symlink("/etc/hosts", join(dir, "hosts.aseprite"));
+  await symlink("/etc/hosts", nodePath.join(dir, "hosts.aseprite"));
   const r = await run(
-    `await sprite({ open: ${JSON.stringify(join(dir, "hosts.aseprite"))} })`
+    `await sprite({ open: ${JSON.stringify(nodePath.join(dir, "hosts.aseprite"))} })`
   );
   const rBad = fail(r);
   assert.match(rBad.error.message, /outside the allowed folders/);

@@ -15,9 +15,9 @@ import type { WireMessage } from "../src/wire.ts";
 // src/ws.d.ts declares no client constructor, so the test supplies the one signature it uses.
 const Client = WebSocket as unknown as new (url: string) => WebSocket;
 const TOKEN = "a".repeat(48);
-function hmac(token: string, text: string) {
+const hmac = (token: string, text: string) => {
   return createHmac("sha256", token).update(text).digest("hex");
-}
+};
 const sleep = (ms: number) =>
   new Promise<void>((r) => {
     setTimeout(r, ms);
@@ -86,7 +86,7 @@ async function fakeExtension(
       }
     });
   });
-  function reply(msg: WireMessage, blobs: Uint8Array[]) {
+  const reply = (msg: WireMessage, blobs: Uint8Array[]) => {
     const out = onRequest(msg, blobs);
     if (!out) {
       return;
@@ -97,14 +97,14 @@ async function fakeExtension(
     ws.send(
       out.blobs?.length ? encodeFrame(body, out.blobs) : JSON.stringify(body)
     );
-  }
+  };
   return { outcome: await outcome, ws };
 }
 
-async function withLink(
+const withLink = async (
   opts: Partial<LinkOptions>,
   fn: (link: LinkServer) => Promise<void>
-) {
+) => {
   const link = createLink({ port: 0, token: TOKEN, ...opts });
   await link.listening;
   try {
@@ -112,7 +112,7 @@ async function withLink(
   } finally {
     await link.close();
   }
-}
+};
 
 test("pairs with the HMAC handshake and answers TEXT requests", () =>
   withLink({}, async (link) => {

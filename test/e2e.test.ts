@@ -15,7 +15,7 @@ import {
   waitForHealth,
 } from "./fixtures/daemon-env.ts";
 
-async function proxyClient(env: Record<string, string>) {
+const proxyClient = async (env: Record<string, string>) => {
   const client = new Client({ name: "e2e", version: "0" });
   await client.connect(
     new StdioClientTransport({
@@ -26,7 +26,7 @@ async function proxyClient(env: Record<string, string>) {
     })
   );
   return client;
-}
+};
 
 test("the stdio proxy starts a daemon, lists the one tool and inlines views", async (t) => {
   const ctx = await isolatedEnv();

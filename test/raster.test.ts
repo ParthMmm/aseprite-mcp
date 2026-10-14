@@ -6,11 +6,11 @@ import * as R from "../src/raster.ts";
 const P = { b: "#0000ff", g: "#00ff00", k: "#000000", r: "#ff0000" };
 
 /** rows -> canvas (width = longest row) */
-function canvas(rows: string[], palette: R.Palette = P) {
+const canvas = (rows: string[], palette: R.Palette = P) => {
   const cv = R.blank(Math.max(...rows.map((r) => r.length)), rows.length);
   R.map(cv, palette, rows);
   return cv;
-}
+};
 /** canvas -> full-width rows with the test palette's keys */
 const show = (cv: R.Canvas, palette: R.Palette = P) =>
   R.read(cv, { palette }).rows.map((r) => r.padEnd(cv.width, "."));

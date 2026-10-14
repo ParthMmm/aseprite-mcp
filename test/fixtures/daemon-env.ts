@@ -5,12 +5,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import nodePath from "node:path";
 
 import type { Health } from "../../src/stdio-proxy.ts";
 
-export const root = join(import.meta.dirname, "..", "..");
-export const BIN = join(root, "bin", "aseprite-mcp.ts");
+export const root = nodePath.join(import.meta.dirname, "..", "..");
+export const BIN = nodePath.join(root, "bin", "aseprite-mcp.ts");
 const sleep = (ms: number) =>
   new Promise<void>((r) => {
     setTimeout(r, ms);
@@ -26,17 +26,22 @@ export async function freePort(): Promise<number> {
 
 /** Fresh ports and directories; `cleanup()` stops whatever daemon answers on the port and removes the directories. */
 export async function isolatedEnv() {
-  const dir = mkdtempSync(join(tmpdir(), "mcp-test-"));
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "mcp-test-"));
   const httpPort = await freePort();
   const env = {
     ...process.env,
     ASEPRITE_MCP_AUTOSAVE: "off",
     ASEPRITE_MCP_HTTP_PORT: String(httpPort),
     ASEPRITE_MCP_PORT: String(await freePort()),
-    ASEPRITE_MCP_PROGRAM: join(root, "test", "fixtures", "fake-program.ts"),
+    ASEPRITE_MCP_PROGRAM: nodePath.join(
+      root,
+      "test",
+      "fixtures",
+      "fake-program.ts"
+    ),
     ASEPRITE_MCP_TOKEN: "t".repeat(48),
-    ASEPRITE_MCP_VIEWS_DIR: join(dir, "views"),
-    XDG_CONFIG_HOME: join(dir, "config"),
+    ASEPRITE_MCP_VIEWS_DIR: nodePath.join(dir, "views"),
+    XDG_CONFIG_HOME: nodePath.join(dir, "config"),
   };
   const base = `http://127.0.0.1:${httpPort}`;
   return {

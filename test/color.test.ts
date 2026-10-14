@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import nodePath from "node:path";
 import { test } from "node:test";
 
 import {
@@ -63,9 +63,9 @@ test("ramp rejects skip characters and duplicate keys", () => {
 });
 
 test("named palettes save, load and survive other names", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "palettes-"));
+  const dir = await mkdtemp(nodePath.join(tmpdir(), "palettes-"));
   try {
-    const file = join(dir, "nested", "palettes.json");
+    const file = nodePath.join(dir, "nested", "palettes.json");
     assert.deepEqual(await loadPalettes(file), {});
     await savePalette(file, "skin", { a: "#ffcd75", b: "#b13e53" });
     await savePalette(file, "sea", { s: "#29366f" });

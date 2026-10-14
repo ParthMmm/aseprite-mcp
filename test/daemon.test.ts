@@ -36,16 +36,16 @@ before(async () => {
 });
 after(() => ctx.cleanup());
 
-async function connect(query = "") {
+const connect = async (query = "") => {
   const client = new Client({ name: "daemon-test", version: "0" });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`${ctx.base}/mcp${query}`))
   );
   return client;
-}
+};
 
 // Raw request so the test controls the Host header (fetch does not allow overriding it).
-function rawGet(path: string, headers: Record<string, string>) {
+const rawGet = (path: string, headers: Record<string, string>) => {
   return new Promise<number | undefined>((done, fail) => {
     const req = request(
       { headers, host: "127.0.0.1", path, port: ctx.httpPort },
@@ -57,7 +57,7 @@ function rawGet(path: string, headers: Record<string, string>) {
     req.on("error", fail);
     req.end();
   });
-}
+};
 
 test("/health reports version, pid and the extension status", async () => {
   const h = await waitForHealth(ctx.base);

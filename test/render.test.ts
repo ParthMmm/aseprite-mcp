@@ -12,7 +12,7 @@ import {
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
-function crcOf(buf: Uint8Array) {
+const crcOf = (buf: Uint8Array) => {
   let crc = ~0;
   for (const byte of buf) {
     crc ^= byte;
@@ -21,10 +21,10 @@ function crcOf(buf: Uint8Array) {
     }
   }
   return ~crc >>> 0;
-}
+};
 
 /** Minimal decoder for the PNGs encodePng writes: checks every chunk CRC and returns RGBA. */
-function decodePng(png: Buffer) {
+const decodePng = (png: Buffer) => {
   assert.deepEqual([...png.subarray(0, 8)], SIGNATURE);
   const chunks = [];
   for (let o = 8; o < png.length;) {
@@ -62,7 +62,7 @@ function decodePng(png: Buffer) {
     );
   }
   return { data, height, width };
-}
+};
 const pixel = (
   img: { data: Uint8Array; width: number },
   x: number,

@@ -1,7 +1,7 @@
 // Stands in for src/program.ts when a test starts the daemon with ASEPRITE_MCP_PROGRAM=<this file>.
 // execute("view") writes a 1x1 PNG into viewsDir; "throw" fails; any other code echoes back with the link status.
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import nodePath from "node:path";
 
 import type { Envelope, RuntimeOptions } from "../../src/daemon.ts";
 import { encodePng } from "../../src/render.ts";
@@ -23,7 +23,10 @@ export function createRuntime({ link, viewsDir }: RuntimeOptions) {
       }
       const images: string[] = [];
       if (code === "view") {
-        const path = join(viewsDir, `fake-${process.pid}-${Date.now()}.png`);
+        const path = nodePath.join(
+          viewsDir,
+          `fake-${process.pid}-${Date.now()}.png`
+        );
         await writeFile(path, encodePng(1, 1, Uint8Array.of(255, 0, 0, 255)));
         images.push(path);
       }

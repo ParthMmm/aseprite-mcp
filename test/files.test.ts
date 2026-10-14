@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import nodePath from "node:path";
 import { test } from "node:test";
 
 import { createBackups } from "../src/files.ts";
@@ -12,7 +12,7 @@ interface Call {
   cmd: string;
 }
 
-function recordingLink(): Link & { calls: Call[] } {
+const recordingLink = (): Link & { calls: Call[] } => {
   const calls: Call[] = [];
   return {
     calls,
@@ -31,10 +31,10 @@ function recordingLink(): Link & { calls: Call[] } {
       port: 0,
     }),
   };
-}
+};
 
 test("backups copy each changed sprite by id without switching the active sprite", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "mcp-backups-"));
+  const dir = mkdtempSync(nodePath.join(tmpdir(), "mcp-backups-"));
   t.after(() => rmSync(dir, { force: true, recursive: true }));
   const link = recordingLink();
   const backups = createBackups({ dir, link });
@@ -55,7 +55,9 @@ test("backups copy each changed sprite by id without switching the active sprite
     link.calls.map((c) => c.args.sprite),
     [1, 2, 3]
   );
-  const folders = link.calls.map((c) => basename(dirname(c.args.path)));
+  const folders = link.calls.map((c) =>
+    nodePath.basename(nodePath.dirname(c.args.path))
+  );
   assert.equal(folders[2], "hero");
   assert.notEqual(
     folders[0],
