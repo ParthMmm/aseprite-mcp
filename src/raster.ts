@@ -109,6 +109,13 @@ const keyAt = (d: Uint8Array, i: number): number =>
 const keyOf = ([r, g, b, a]: Rgba): number =>
   a === 0 ? 0 : ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
 
+const unpackKey = (key: number): [number, number, number, number] => [
+  key >>> 24,
+  (key >>> 16) & 0xff,
+  (key >>> 8) & 0xff,
+  key & 0xff,
+];
+
 const checkRect = (r: unknown): Rect => {
   if (
     !Array.isArray(r) ||
@@ -498,16 +505,20 @@ export const outline = (
     // Solid pixels on the canvas edge want an outline pixel just outside it.
     const inRect = (x: number, y: number): boolean =>
       !r || (x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]);
-    const edge: [solidX: number, solidY: number, x: number, y: number][] = [];
+    let lost = 0;
+    const check = (sx: number, sy: number, x: number, y: number): void => {
+      if (isSolid(sx, sy) && inRect(x, y)) {
+        lost += 1;
+      }
+    };
     for (let x = 0; x < w; x += 1) {
-      edge.push([x, 0, x, -1], [x, h - 1, x, h]);
+      check(x, 0, x, -1);
+      check(x, h - 1, x, h);
     }
     for (let y = 0; y < h; y += 1) {
-      edge.push([0, y, -1, y], [w - 1, y, w, y]);
+      check(0, y, -1, y);
+      check(w - 1, y, w, y);
     }
-    const lost = edge.filter(
-      ([sx, sy, x, y]) => isSolid(sx, sy) && inRect(x, y)
-    ).length;
     if (lost) {
       cv.clipped = (cv.clipped ?? 0) + lost;
     }
@@ -734,10 +745,7 @@ export const downscale = (cv: Canvas, factor: number): Canvas => {
       }
       const key = mostCommon(counts);
       const o = (by * out.width + bx) * 4;
-      out.data[o] = key >>> 24;
-      out.data[o + 1] = (key >>> 16) & 0xff;
-      out.data[o + 2] = (key >>> 8) & 0xff;
-      out.data[o + 3] = key & 0xff;
+      out.data.set(unpackKey(key), o);
     }
   }
   return out;
@@ -760,12 +768,5 @@ export const colors = (cv: Canvas, max = 32): string[] => {
   return [...counts]
     .toSorted((a, b) => b[1] - a[1])
     .slice(0, max)
-    .map(([key]) =>
-      formatHex([
-        key >>> 24,
-        (key >>> 16) & 0xff,
-        (key >>> 8) & 0xff,
-        key & 0xff,
-      ])
-    );
+    .map(([key]) => formatHex(unpackKey(key)));
 };
