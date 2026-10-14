@@ -10,33 +10,73 @@ import {
   SHADOW_HUE,
 } from "./color.ts";
 
-/** @typedef {{ width: number, height: number, data: Uint8Array }} Canvas */
-/** @typedef {[number, number, number, number]} Rect  [x, y, w, h] */
-/** @typedef {[number, number, number, number]} Rgba */
-/** @typedef {"h" | "v" | "hv"} Flip */
+/** One full-canvas RGBA cel, row-major. */
+export interface Canvas {
+  width: number;
+  height: number;
+  data: Uint8Array;
+}
+export type Rect = [x: number, y: number, w: number, h: number];
+/** A rect clipped to the canvas: [x0, y0, x1, y1), possibly empty. */
+export type Bounds = [x0: number, y0: number, x1: number, y1: number];
+export type Rgba = readonly [r: number, g: number, b: number, a: number];
+type Rgb = [r: number, g: number, b: number];
+export type Flip = "h" | "v" | "hv";
+/** One-character keys to colour strings. */
+export type Palette = Record<string, string>;
+export type OutlineMode = "selective" | "outside" | "inside";
 
-const CLEAR = /** @type {Rgba} */ ([0, 0, 0, 0]);
+export interface MapOptions {
+  x?: number;
+  y?: number;
+  flip?: Flip;
+}
+export interface FillOptions {
+  fill?: boolean;
+}
+export interface RectOptions {
+  rect?: Rect;
+}
+export interface OutlineOptions extends RectOptions {
+  mode?: OutlineMode;
+  strength?: number;
+}
+export interface CopyOptions extends RectOptions {
+  x?: number;
+  y?: number;
+  flip?: Flip;
+}
+export interface ReadOptions extends RectOptions {
+  palette?: Palette;
+}
+/** The `map` format: a palette and one string per row. */
+export interface PixelRows {
+  palette: Palette;
+  rows: string[];
+}
+export type Point = [x: number, y: number, color: string];
+
+const CLEAR: Rgba = [0, 0, 0, 0];
+const OUTLINE_MODES = new Set<string>(["selective", "outside", "inside"]);
 export const SKIP_CHARS = new Set([".", " "]);
 // Keys that `read` hands out. Quote and backslash are absent so rows stay cheap to escape in JSON.
 const MAP_KEYS = [
   ..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&*+-/:;<=>?@^_~!|()[]{},'`",
 ];
 
-/** @returns {Canvas} */
-export const blank = (width, height) => ({
+export const blank = (width: number, height: number): Canvas => ({
   data: new Uint8Array(width * height * 4),
   height,
   width,
 });
 
-/** @returns {Rgba} */
-function rgba(c) {
-  const v = parseHex(c);
-  return v[3] === 0 ? CLEAR : v;
-}
+// The colour may be anything a program passed; parseHex validates it.
+const rgba = (c: unknown): Rgba => {
+  const [r, g, b, a] = parseHex(c);
+  return a === 0 ? CLEAR : [r, g, b, a];
+};
 
-/** @returns {0 | 1} */
-function put(cv, x, y, [r, g, b, a]) {
+const put = (cv: Canvas, x: number, y: number, [r, g, b, a]: Rgba): 0 | 1 => {
   if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) {
     return 0;
   }
@@ -54,28 +94,32 @@ function put(cv, x, y, [r, g, b, a]) {
   d[i + 2] = b;
   d[i + 3] = a;
   return 1;
-}
+};
 
 /** 32-bit key of the pixel at byte offset i; every transparent pixel is 0. */
-function keyAt(d, i) {
-  return d[i + 3] === 0
+const keyAt = (d: Uint8Array, i: number): number =>
+  d[i + 3] === 0
     ? 0
     : ((d[i] << 24) | (d[i + 1] << 16) | (d[i + 2] << 8) | d[i + 3]) >>> 0;
-}
-const keyOf = ([r, g, b, a]) =>
+const keyOf = ([r, g, b, a]: Rgba): number =>
   a === 0 ? 0 : ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
 
-function checkRect(r) {
-  if (!Array.isArray(r) || r.length !== 4 || !r.every(Number.isInteger)) {
+const checkRect = (r: unknown): Rect => {
+  if (
+    !Array.isArray(r) ||
+    r.length !== 4 ||
+    !r.every((v) => Number.isInteger(v))
+  ) {
     throw new Error(
       `rect must be [x, y, width, height] in whole pixels, got ${JSON.stringify(r)}.`
     );
   }
-  return /** @type {Rect} */ (r);
-}
+  const [x, y, w, h]: number[] = r;
+  return [x, y, w, h];
+};
 
-/** Clip a rect to the canvas. @returns {[number, number, number, number]} [x0, y0, x1, y1), possibly empty */
-export function clip(cv, r) {
+/** Clip a rect to the canvas; no rect means the whole canvas. */
+export const clip = (cv: Canvas, r?: unknown): Bounds => {
   if (r === undefined || r === null) {
     return [0, 0, cv.width, cv.height];
   }
@@ -88,25 +132,28 @@ export function clip(cv, r) {
     Math.max(x0, Math.min(cv.width, x + w)),
     Math.max(y0, Math.min(cv.height, y + h)),
   ];
-}
+};
 
-export function flipRows(rows, flip) {
+export const flipRows = (rows: string[], flip?: Flip): string[] => {
   const horizontal = flip === "h" || flip === "hv";
   const vertical = flip === "v" || flip === "hv";
   const width = Math.max(0, ...rows.map((r) => [...r].length));
   const mirrored = horizontal
-    ? rows.map((r) => [...r.padEnd(width, ".")].reverse().join(""))
+    ? rows.map((r) => [...r.padEnd(width, ".")].toReversed().join(""))
     : rows;
   return vertical ? mirrored.toReversed() : mirrored;
-}
+};
 
 /**
  * Pixel map: one character per pixel. "." and " " leave the pixel; a key mapped to "#00000000" erases.
  * Validates every character before writing, so a bad map changes nothing.
- * @param {Canvas} cv @param {Record<string, string>} palette @param {string[]} rows
- * @param {{ x?: number, y?: number, flip?: Flip }} [o]
  */
-export function map(cv, palette, rows, { x = 0, y = 0, flip } = {}) {
+export const map = (
+  cv: Canvas,
+  palette: Palette | undefined,
+  rows: string[],
+  { x = 0, y = 0, flip }: MapOptions = {}
+): number => {
   const colors = new Map(
     Object.entries(palette ?? {}).map(([k, c]) => [k, rgba(c)])
   );
@@ -121,20 +168,27 @@ export function map(cv, palette, rows, { x = 0, y = 0, flip } = {}) {
     );
   }
   let n = 0;
-  chars.forEach((row, j) =>
-    row.forEach((ch, i) => {
-      if (!SKIP_CHARS.has(ch)) {
-        n += put(cv, x + i, y + j, colors.get(ch));
+  for (const [j, row] of chars.entries()) {
+    for (const [i, ch] of row.entries()) {
+      const c = colors.get(ch);
+      if (c && !SKIP_CHARS.has(ch)) {
+        n += put(cv, x + i, y + j, c);
       }
-    })
-  );
+    }
+  }
   return n;
-}
+};
 
-/** @param {[number, number, string][]} points */
-export function px(cv, points) {
-  const cache = new Map();
-  const col = (c) => cache.get(c) ?? cache.set(c, rgba(c)).get(c);
+export const px = (cv: Canvas, points: Point[]): number => {
+  const cache = new Map<string, Rgba>();
+  const col = (c: string): Rgba => {
+    let v = cache.get(c);
+    if (!v) {
+      v = rgba(c);
+      cache.set(c, v);
+    }
+    return v;
+  };
   for (const p of points) {
     col(p[2]);
   }
@@ -143,10 +197,17 @@ export function px(cv, points) {
     n += put(cv, x, y, col(c));
   }
   return n;
-}
+};
 
 /** Bresenham, both ends inclusive. */
-export function line(cv, x0, y0, x1, y1, color) {
+export const line = (
+  cv: Canvas,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  color: string
+): number => {
   const c = rgba(color);
   const dx = Math.abs(x1 - x0);
   const dy = -Math.abs(y1 - y0);
@@ -154,33 +215,39 @@ export function line(cv, x0, y0, x1, y1, color) {
   const sy = y0 < y1 ? 1 : -1;
   let err = dx + dy;
   let n = 0;
+  let x = x0;
+  let y = y0;
   for (;;) {
-    n += put(cv, x0, y0, c);
-    if (x0 === x1 && y0 === y1) {
+    n += put(cv, x, y, c);
+    if (x === x1 && y === y1) {
       return n;
     }
     const e2 = 2 * err;
     if (e2 >= dy) {
       err += dy;
-      x0 += sx;
+      x += sx;
     }
     if (e2 <= dx) {
       err += dx;
-      y0 += sy;
+      y += sy;
     }
   }
-}
+};
 
-/** @param {Rect} r */
-export function rect(cv, r, color, { fill = false } = {}) {
+export const rect = (
+  cv: Canvas,
+  r: Rect,
+  color: string,
+  { fill: filled = false }: FillOptions = {}
+): number => {
   const c = rgba(color);
   const [x0, y0, x1, y1] = clip(cv, r);
   const [rx, ry, rw, rh] = r;
   let n = 0;
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
       if (
-        fill ||
+        filled ||
         x === rx ||
         y === ry ||
         x === rx + rw - 1 ||
@@ -191,24 +258,27 @@ export function rect(cv, r, color, { fill = false } = {}) {
     }
   }
   return n;
-}
+};
 
-/** Zingl's ellipse-in-rectangle, the algorithm Aseprite's ellipse tool uses. @returns {Map<number, [number, number]>} row -> [minX, maxX] */
-function ellipseSpans([x, y, w, h], plot) {
+/** Zingl's ellipse-in-rectangle, the algorithm Aseprite's ellipse tool uses. Calls `plot` for every edge pixel. */
+const ellipseEdge = (
+  [x, y, w, h]: Rect,
+  plot: (px: number, py: number) => void
+): void => {
   let x0 = x;
   let x1 = x + w - 1;
   let y0 = y;
   let y1 = y + h - 1;
-  let a = Math.abs(x1 - x0);
-  let b = Math.abs(y1 - y0);
-  let b1 = b & 1;
+  const a = Math.abs(x1 - x0);
+  const b = Math.abs(y1 - y0);
+  const b1 = b & 1;
   let dx = 4 * (1 - a) * b * b;
   let dy = 4 * (b1 + 1) * a * a;
   let err = dx + dy + b1 * a * a;
   y0 += Math.floor((b + 1) / 2);
   y1 = y0 - b1;
-  a = 8 * a * a;
-  b1 = 8 * b * b;
+  const stepX = 8 * a * a;
+  const stepY = 8 * b * b;
   do {
     plot(x1, y0);
     plot(x0, y0);
@@ -216,36 +286,44 @@ function ellipseSpans([x, y, w, h], plot) {
     plot(x1, y1);
     const e2 = 2 * err;
     if (e2 <= dy) {
-      y0++;
-      y1--;
-      err += dy += a;
+      y0 += 1;
+      y1 -= 1;
+      dy += stepX;
+      err += dy;
     }
     if (e2 >= dx || 2 * err > dy) {
-      x0++;
-      x1--;
-      err += dx += b1;
+      x0 += 1;
+      x1 -= 1;
+      dx += stepY;
+      err += dx;
     }
   } while (x0 <= x1);
+  // Flat ellipses (a = 1) stop early: finish the tips.
   while (y0 - y1 <= b) {
-    // flat ellipses (a = 1) stop early: finish the tips
     plot(x0 - 1, y0);
-    plot(x1 + 1, y0++);
+    plot(x1 + 1, y0);
+    y0 += 1;
     plot(x0 - 1, y1);
-    plot(x1 + 1, y1--);
+    plot(x1 + 1, y1);
+    y1 -= 1;
   }
-}
+};
 
 /** Ellipse inscribed in rect [x, y, w, h]. */
-export function ellipse(cv, r, color, { fill = false } = {}) {
-  checkRect(r);
+export const ellipse = (
+  cv: Canvas,
+  r: Rect,
+  color: string,
+  { fill: filled = false }: FillOptions = {}
+): number => {
+  const box = checkRect(r);
   const c = rgba(color);
-  if (r[2] <= 0 || r[3] <= 0) {
+  if (box[2] <= 0 || box[3] <= 0) {
     return 0;
   }
-  /** @type {Map<number, [number, number]>} */
-  const spans = new Map();
-  const points = [];
-  ellipseSpans(r, (x, y) => {
+  const spans = new Map<number, [min: number, max: number]>();
+  const points: [x: number, y: number][] = [];
+  ellipseEdge(box, (x, y) => {
     points.push([x, y]);
     const s = spans.get(y);
     if (s) {
@@ -256,17 +334,27 @@ export function ellipse(cv, r, color, { fill = false } = {}) {
     }
   });
   let n = 0;
-  if (fill) {
-    for (const [y, [a, b]] of spans)
-      for (let x = a; x <= b; x++) n += put(cv, x, y, c);
+  if (filled) {
+    for (const [y, [a, b]] of spans) {
+      for (let x = a; x <= b; x += 1) {
+        n += put(cv, x, y, c);
+      }
+    }
   } else {
-    for (const [x, y] of points) n += put(cv, x, y, c);
+    for (const [x, y] of points) {
+      n += put(cv, x, y, c);
+    }
   }
   return n;
-}
+};
 
 /** Contiguous (4-neighbour) flood fill of the exact colour at (x, y). */
-export function fill(cv, x, y, color) {
+export const fill = (
+  cv: Canvas,
+  x: number,
+  y: number,
+  color: string
+): number => {
   const { width: w, height: h, data: d } = cv;
   if (x < 0 || y < 0 || x >= w || y >= h) {
     return 0;
@@ -280,8 +368,7 @@ export function fill(cv, x, y, color) {
   const stack = [y * w + x];
   seen[y * w + x] = 1;
   let n = 0;
-  while (stack.length) {
-    const p = stack.pop();
+  for (let p = stack.pop(); p !== undefined; p = stack.pop()) {
     const px0 = p % w;
     const py0 = (p - px0) / w;
     n += put(cv, px0, py0, c);
@@ -302,6 +389,19 @@ export function fill(cv, x, y, color) {
     }
   }
   return n;
+};
+
+const SIDES = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+] as const;
+const AROUND = [...SIDES, [1, 1], [-1, 1], [1, -1], [-1, -1]] as const;
+
+interface Vote {
+  n: number;
+  rgb: Rgb;
 }
 
 /**
@@ -309,41 +409,34 @@ export function fill(cv, x, y, color) {
  * selective: outside the shape, each pixel derived from the fill it borders (darker and cooler on the shadow side,
  * lighter facing the top-left light); `color` is unused. outside / inside: `color` outside or on the edge.
  */
-export function outline(
-  cv,
-  color,
-  { mode = "selective", rect: r, strength = 0.6 } = {}
-) {
-  if (!["selective", "outside", "inside"].includes(mode)) {
+export const outline = (
+  cv: Canvas,
+  color: string | undefined,
+  { mode = "selective", rect: r, strength = 0.6 }: OutlineOptions = {}
+): number => {
+  if (!OUTLINE_MODES.has(mode)) {
     throw new Error(
       `outline mode must be selective, outside or inside, got ${JSON.stringify(mode)}.`
     );
   }
   const { width: w, height: h, data: d } = cv;
-  const alphaAt = (x, y) =>
+  const alphaAt = (x: number, y: number): number =>
     x < 0 || y < 0 || x >= w || y >= h ? 0 : d[(y * w + x) * 4 + 3];
-  const isSolid = (x, y) => alphaAt(x, y) >= 128;
-  const SIDES = [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ];
-  const AROUND = [...SIDES, [1, 1], [-1, 1], [1, -1], [-1, -1]];
-  const touchesEmpty = (x, y) =>
+  const isSolid = (x: number, y: number) => alphaAt(x, y) >= 128;
+  const touchesEmpty = (x: number, y: number) =>
     SIDES.some(([dx, dy]) => !isSolid(x + dx, y + dy));
-  const touchesSolid = (x, y) =>
+  const touchesSolid = (x: number, y: number) =>
     SIDES.some(([dx, dy]) => isSolid(x + dx, y + dy));
   const wanted =
     mode === "inside"
-      ? (x, y) => isSolid(x, y) && touchesEmpty(x, y)
-      : (x, y) => alphaAt(x, y) === 0 && touchesSolid(x, y);
+      ? (x: number, y: number) => isSolid(x, y) && touchesEmpty(x, y)
+      : (x: number, y: number) => alphaAt(x, y) === 0 && touchesSolid(x, y);
   const flat = mode === "selective" ? null : rgba(color);
   const [x0, y0, x1, y1] = clip(cv, r);
 
   // Derived from the fill the pixel borders: its commonest solid neighbour, shaded by which side the shape lies on.
-  function shaded(x, y) {
-    const votes = new Map();
+  const shaded = (x: number, y: number): Rgba | null => {
+    const votes = new Map<string, Vote>();
     let pullX = 0;
     let pullY = 0;
     for (const [dx, dy] of AROUND) {
@@ -351,35 +444,37 @@ export function outline(
         continue;
       }
       const i = ((y + dy) * w + x + dx) * 4;
-      const rgb = [d[i], d[i + 1], d[i + 2]];
+      const rgb: Rgb = [d[i], d[i + 1], d[i + 2]];
       const entry = votes.get(rgb.join(",")) ?? { n: 0, rgb };
-      entry.n++;
+      entry.n += 1;
       votes.set(rgb.join(","), entry);
       pullX += dx;
       pullY += dy;
     }
-    if (!votes.size) {
+    let best: Vote | undefined;
+    for (const v of votes.values()) {
+      if (!best || v.n > best.n) {
+        best = v;
+      }
+    }
+    if (!best) {
       return null;
     }
-    const { rgb } = [...votes.values()].reduce((best, v) =>
-      v.n > best.n ? v : best
-    );
-    const [L, C, hue] = rgbToOklch(...rgb);
-    const towardLight = pullX + pullY > 0; // shape lies right or below, so this edge faces the top-left light
+    const [L, C, hue] = rgbToOklch(...best.rgb);
+    // The shape lies right or below, so this edge faces the top-left light.
+    const towardLight = pullX + pullY > 0;
     const factor = 1 - strength * (towardLight ? 0.35 : 0.85);
-    return [
-      ...oklchToRgb(
-        L * factor,
-        C * 1.1,
-        towardLight ? hue : hueToward(hue, SHADOW_HUE, 20)
-      ),
-      255,
-    ];
-  }
+    const [sr, sg, sb] = oklchToRgb(
+      L * factor,
+      C * 1.1,
+      towardLight ? hue : hueToward(hue, SHADOW_HUE, 20)
+    );
+    return [sr, sg, sb, 255];
+  };
 
-  const planned = [];
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
+  const planned: [x: number, y: number, c: Rgba][] = [];
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
       if (!wanted(x, y)) {
         continue;
       }
@@ -390,11 +485,33 @@ export function outline(
     }
   }
   // Applied after planning so one pixel's colour never feeds the next one's.
-  return planned.reduce((n, [x, y, c]) => n + put(cv, x, y, c), 0);
-}
+  let n = 0;
+  for (const [x, y, c] of planned) {
+    n += put(cv, x, y, c);
+  }
+  return n;
+};
+
+/** The pixels of rect as a new Canvas; parts outside the canvas are transparent. */
+export const crop = (cv: Canvas, r: Rect): Canvas => {
+  const [rx, ry, rw, rh] = checkRect(r);
+  const out = blank(Math.max(0, rw), Math.max(0, rh));
+  const [x0, y0, x1, y1] = clip(cv, r);
+  for (let y = y0; y < y1; y += 1) {
+    out.data.set(
+      cv.data.subarray((y * cv.width + x0) * 4, (y * cv.width + x1) * 4),
+      ((y - ry) * out.width + (x0 - rx)) * 4
+    );
+  }
+  return out;
+};
 
 /** Copy pixels of `rect` in `src` (any cel, this one included) to (x, y) in `dst`, optionally flipped. Overwrites. */
-export function copy(dst, src, { rect: r, x, y, flip } = {}) {
+export const copy = (
+  dst: Canvas,
+  src: Canvas,
+  { rect: r, x, y, flip }: CopyOptions = {}
+): number => {
   const [sx0, sy0, sx1, sy1] = clip(src, r);
   const w = sx1 - sx0;
   const h = sy1 - sy0;
@@ -404,8 +521,8 @@ export function copy(dst, src, { rect: r, x, y, flip } = {}) {
   const fh = flip === "h" || flip === "hv";
   const fv = flip === "v" || flip === "hv";
   let n = 0;
-  for (let j = 0; j < h; j++) {
-    for (let i = 0; i < w; i++) {
+  for (let j = 0; j < h; j += 1) {
+    for (let i = 0; i < w; i += 1) {
       const k = ((fv ? h - 1 - j : j) * w + (fh ? w - 1 - i : i)) * 4;
       n += put(dst, ox + i, oy + j, [
         tmp[k],
@@ -416,109 +533,113 @@ export function copy(dst, src, { rect: r, x, y, flip } = {}) {
     }
   }
   return n;
-}
+};
+
+const clearRaw = (cv: Canvas, [x0, y0, x1, y1]: Bounds): void => {
+  for (let y = y0; y < y1; y += 1) {
+    cv.data.fill(0, (y * cv.width + x0) * 4, (y * cv.width + x1) * 4);
+  }
+};
+const copyRaw = (dst: Canvas, src: Canvas, ox: number, oy: number): void => {
+  const s = src.data;
+  for (let j = 0; j < src.height; j += 1) {
+    for (let i = 0; i < src.width; i += 1) {
+      const k = (j * src.width + i) * 4;
+      put(dst, ox + i, oy + j, [s[k], s[k + 1], s[k + 2], s[k + 3]]);
+    }
+  }
+};
 
 /** Move the pixels inside rect by (dx, dy); vacated pixels become transparent, moved pixels land anywhere on the canvas. */
-export function shift(cv, dx, dy, { rect: r } = {}) {
+export const shift = (
+  cv: Canvas,
+  dx: number,
+  dy: number,
+  { rect: r }: RectOptions = {}
+): number => {
   const [x0, y0, x1, y1] = clip(cv, r);
   const moved = crop(cv, [x0, y0, x1 - x0, y1 - y0]);
-  const next = { ...cv, data: cv.data.slice() };
+  const next = { ...cv, data: new Uint8Array(cv.data) };
   clearRaw(next, [x0, y0, x1, y1]);
   copyRaw(next, moved, x0 + dx, y0 + dy);
   let n = 0;
   for (let i = 0; i < cv.data.length; i += 4) {
-    if (keyAt(cv.data, i) !== keyAt(next.data, i)) n++;
+    if (keyAt(cv.data, i) !== keyAt(next.data, i)) {
+      n += 1;
+    }
   }
   cv.data.set(next.data);
   return n;
-}
-
-function clearRaw(cv, [x0, y0, x1, y1]) {
-  for (let y = y0; y < y1; y++) {
-    cv.data.fill(0, (y * cv.width + x0) * 4, (y * cv.width + x1) * 4);
-  }
-}
-function copyRaw(dst, src, ox, oy) {
-  for (let j = 0; j < src.height; j++) {
-    for (let i = 0; i < src.width; i++) {
-      const k = (j * src.width + i) * 4,
-        s = src.data;
-      put(dst, ox + i, oy + j, [s[k], s[k + 1], s[k + 2], s[k + 3]]);
-    }
-  }
-}
+};
 
 /** Replace exact colours: { "#from": "#to" }. */
-export function recolor(cv, mapping, { rect: r } = {}) {
+export const recolor = (
+  cv: Canvas,
+  mapping: Record<string, string>,
+  { rect: r }: RectOptions = {}
+): number => {
   const table = new Map(
     Object.entries(mapping).map(([from, to]) => [keyOf(rgba(from)), rgba(to)])
   );
   const [x0, y0, x1, y1] = clip(cv, r);
   let n = 0;
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
       const to = table.get(keyAt(cv.data, (y * cv.width + x) * 4));
-      if (to) n += put(cv, x, y, to);
+      if (to) {
+        n += put(cv, x, y, to);
+      }
     }
   }
   return n;
-}
+};
 
 /** Make rect (default: the whole canvas) transparent. */
-export function clear(cv, r) {
+export const clear = (cv: Canvas, r?: Rect): number => {
   const [x0, y0, x1, y1] = clip(cv, r);
   let n = 0;
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) n += put(cv, x, y, CLEAR);
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      n += put(cv, x, y, CLEAR);
+    }
   }
   return n;
-}
-
-/** The pixels of rect as a new Canvas; parts outside the canvas are transparent. @returns {Canvas} */
-export function crop(cv, r) {
-  const [rx, ry, rw, rh] = checkRect(r);
-  const out = blank(Math.max(0, rw), Math.max(0, rh));
-  const [x0, y0, x1, y1] = clip(cv, r);
-  for (let y = y0; y < y1; y++) {
-    out.data.set(
-      cv.data.subarray((y * cv.width + x0) * 4, (y * cv.width + x1) * 4),
-      ((y - ry) * out.width + (x0 - rx)) * 4
-    );
-  }
-  return out;
-}
+};
 
 /**
  * Reads pixels back in the `map` format. Keys from `palette` stay for the colours they name; other colours get
  * fresh one-character keys. "." is transparent and trailing dots are cut. The result lists only keys it used.
- * @returns {{ palette: Record<string, string>, rows: string[] }}
  */
-export function read(cv, { rect: r, palette: preferred } = {}) {
-  const keyOf = new Map(); // "rrggbbaa" -> key
+export const read = (
+  cv: Canvas,
+  { rect: r, palette: preferred }: ReadOptions = {}
+): PixelRows => {
+  const keyByHex = new Map<string, string>();
   for (const [key, color] of Object.entries(preferred ?? {})) {
     const hex = normHex(color);
     const usable =
       !SKIP_CHARS.has(key) && [...key].length === 1 && !hex.endsWith("00");
-    if (usable && !keyOf.has(hex)) {
-      keyOf.set(hex, key);
+    if (usable && !keyByHex.has(hex)) {
+      keyByHex.set(hex, key);
     }
   }
-  const reserved = new Set(keyOf.values());
+  const reserved = new Set(keyByHex.values());
   const spare = MAP_KEYS.filter((k) => !reserved.has(k)).values();
   const [x0, y0, x1, y1] = clip(cv, r);
-  const palette = {};
-  const rows = [];
-  for (let y = y0; y < y1; y++) {
-    const cells = [];
-    for (let x = x0; x < x1; x++) {
+  const d = cv.data;
+  const palette: Palette = {};
+  const rows: string[] = [];
+  for (let y = y0; y < y1; y += 1) {
+    const cells: string[] = [];
+    for (let x = x0; x < x1; x += 1) {
       const i = (y * cv.width + x) * 4;
-      if (cv.data[i + 3] === 0) {
+      if (d[i + 3] === 0) {
         cells.push(".");
         continue;
       }
-      const color = formatHex(cv.data.subarray(i, i + 4));
+      const color = formatHex([d[i], d[i + 1], d[i + 2], d[i + 3]]);
       const hex = normHex(color);
-      let key = keyOf.get(hex);
+      let key = keyByHex.get(hex);
       if (key === undefined) {
         const next = spare.next();
         if (next.done) {
@@ -527,16 +648,17 @@ export function read(cv, { rect: r, palette: preferred } = {}) {
           );
         }
         key = next.value;
-        keyOf.set(hex, key);
+        keyByHex.set(hex, key);
       }
       palette[key] ??= color;
       cells.push(key);
     }
+    // No regex: /\.+$/ goes quadratic on long rows.
     let end = cells.length;
     while (end > 0 && cells[end - 1] === ".") {
-      end--;
-    } // no regex: /\.+$/ goes quadratic on long rows
+      end -= 1;
+    }
     rows.push(cells.slice(0, end).join(""));
   }
   return { palette, rows };
-}
+};

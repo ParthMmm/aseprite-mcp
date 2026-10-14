@@ -48,7 +48,9 @@ c.map(P, ["..tt", ".tsst"], { x: 12, y: 10 })
 c.outline()
 return await s.view({ critique: true })`;
 
-const TOPICS = {
+type HelpTopic = "animation" | "conflicts" | "critique" | "files" | "maps";
+
+const TOPICS: Record<HelpTopic, string> = {
   animation: `Animation
 - s.setFrames(n, { duration: 100 }) sets the frame count. New frames copy the last frame, so draw frame 0
   fully first, then change only what moves in later frames. duration is in milliseconds, one number or one per frame.
@@ -107,18 +109,26 @@ const TOPICS = {
 };
 
 // Most useful first; the agent reads this list in order.
-const TOPIC_ORDER = ["maps", "animation", "critique", "conflicts", "files"];
+const TOPIC_ORDER: readonly HelpTopic[] = [
+  "maps",
+  "animation",
+  "critique",
+  "conflicts",
+  "files",
+];
+
+const isTopic = (key: string): key is HelpTopic => Object.hasOwn(TOPICS, key);
 
 /** help() lists the topics; help(topic) returns its text. */
-export function help(topic) {
+export const help = (topic?: unknown): string => {
   if (topic === undefined || topic === null || topic === "") {
     return `Topics: ${TOPIC_ORDER.join(", ")}. Call help("maps") etc.`;
   }
-  const text = TOPICS[String(topic).toLowerCase()];
-  if (!text) {
+  const key = String(topic).toLowerCase();
+  if (!isTopic(key)) {
     throw new Error(
-      `No help topic '${topic}'. Topics: ${TOPIC_ORDER.join(", ")}.`
+      `No help topic '${String(topic)}'. Topics: ${TOPIC_ORDER.join(", ")}.`
     );
   }
-  return text;
-}
+  return TOPICS[key];
+};

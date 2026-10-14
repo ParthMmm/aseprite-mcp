@@ -1,68 +1,160 @@
 // The host-side mirror of ONE sprite for ONE program run; pixel truth during a program lives here.
 // Each program owns its Draft. Aseprite is the only shared state, and the only merge point is commit:
 // compare-and-swap per cel in Lua, then merge3 here when the artist changed a cel underneath us.
+import type { Rect } from "./raster.ts";
 import { fromRgba } from "./wire.ts";
+import type { ColorMode } from "./wire.ts";
 
-/** @typedef {"rgb" | "indexed" | "gray"} ColorMode */
-/** @typedef {string} CelKey  `${layerPath}@${frame}`, frame 0-based */
+/** `${layerPath}@${frame}`, frame 0-based. */
+export type CelKey = `${string}@${number}`;
 
 /**
  * One cel as full-canvas RGBA. `base` is exactly what Aseprite held at snapshot (null = no cel). `cur` is null
  * until the first write (copy-on-write), so dirty is derived from cur vs base, never tracked by hand.
  * Linked cels share one CelBuf, so a write through either key is one write.
- * @typedef {{ base: Uint8Array | null, cur: Uint8Array | null, link: number | null }} CelBuf
  */
+export interface CelBuf {
+  base: Uint8Array | null;
+  cur: Uint8Array | null;
+  link: number | null;
+}
 
-/**
- * `from` is the layer's path at snapshot (null = staged new layer); it is the identity plan() diffs on.
- * @typedef {{ path: string, from: string | null, visible: boolean, opacity: number, blend: string, group: boolean, below?: string, seq?: number }} Layer
- * @typedef {{ name: string, from: number, to: number, direction: string }} Tag
- * @typedef {{ layers: Layer[], durations: number[], tags: Tag[] }} Structure  layers bottom to top
- */
+/** `from` is the layer's path at snapshot (null = staged new layer); it is the identity plan() diffs on. */
+export interface Layer {
+  path: string;
+  from: string | null;
+  visible: boolean;
+  opacity: number;
+  blend: string;
+  group: boolean;
+  below?: string;
+  seq?: number;
+}
 
-/**
- * @typedef {{
- *   sprite: { id: number, name: string, path: string | null, width: number, height: number, colorMode: ColorMode,
- *             transparentIndex: number, palette: string[], selection: [number, number, number, number] | null },
- *   baseStructure: Structure,
- *   structure: Structure,
- *   cels: Map<CelKey, CelBuf>,
- *   seq: number,
- * }} Draft
- */
+export type TagDirection = "forward" | "reverse" | "pingpong";
+/** Snapshot tags may carry any direction Aseprite knows; staged tags use TagDirection. */
+export interface Tag {
+  name: string;
+  from: number;
+  to: number;
+  direction: string;
+}
 
-/** @typedef {{ key: CelKey, layer: string, frame: number, base: Uint8Array | null, next: Uint8Array | null }} Write */
-/** @typedef {{ ops: object[], writes: Write[], pixels: number, palette: string[] }} Plan */
+export interface Structure {
+  /** Bottom to top. */
+  layers: Layer[];
+  durations: number[];
+  tags: Tag[];
+}
 
-export const celKey = (layer, frame) => `${layer}@${frame}`;
-function parseKey(key) {
+export interface SpriteInfo {
+  id: number;
+  name: string;
+  path: string | null;
+  width: number;
+  height: number;
+  colorMode: ColorMode;
+  transparentIndex: number;
+  palette: string[];
+  selection: Rect | null;
+}
+
+export interface Draft {
+  sprite: SpriteInfo;
+  baseStructure: Structure;
+  structure: Structure;
+  cels: Map<CelKey, CelBuf>;
+  seq: number;
+}
+
+/** The extension's snapshot reply; cel blobs index the RGBA blobs passed beside it. */
+export interface SnapshotReply {
+  sprite: Omit<SpriteInfo, "palette" | "selection">;
+  palette: string[];
+  selection: Rect | null;
+  frames: { duration: number }[];
+  layers: Pick<Layer, "path" | "visible" | "opacity" | "blend" | "group">[];
+  tags: Tag[];
+  cels: { layer: string; frame: number; blob: number; link?: number | null }[];
+}
+
+export interface CelWrite {
+  key: CelKey;
+  layer: string;
+  frame: number;
+  base: Uint8Array | null;
+  /** null deletes the cel. */
+  next: Uint8Array | null;
+}
+
+type LayerProps = Partial<Pick<Layer, "visible" | "opacity">>;
+
+/** One structural change for plugin.lua, applied in list order. */
+export type Op =
+  | { op: "palette.append"; colors: string[] }
+  | { op: "layer.remove"; path: string }
+  | ({ op: "layer.set"; path: string; rename?: string } & LayerProps)
+  | { op: "layer.add"; path: string; below?: string }
+  | { op: "frames.set"; count: number; durations: number[] }
+  | ({ op: "tag.set" } & Tag);
+
+export interface Plan {
+  ops: Op[];
+  writes: CelWrite[];
+  pixels: number;
+  palette: string[];
+}
+
+export interface LayerOptions {
+  below?: string;
+  visible?: boolean;
+  opacity?: number;
+  rename?: string;
+  remove?: boolean;
+}
+
+export interface MergeResult {
+  merged: Uint8Array;
+  kept: number;
+  lost: number;
+}
+
+const TAG_DIRECTIONS = new Set<string>(["forward", "reverse", "pingpong"]);
+
+export const celKey = (layer: string, frame: number): CelKey =>
+  `${layer}@${frame}`;
+export const parseKey = (key: CelKey): { frame: number; layer: string } => {
   const at = key.lastIndexOf("@");
   return { frame: Number(key.slice(at + 1)), layer: key.slice(0, at) };
-}
-const clone = (s) => structuredClone(s);
-const parentOf = (path) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
-const nameOf = (path) => path.slice(path.lastIndexOf("/") + 1);
-const within = (path, root) => path === root || path.startsWith(`${root}/`);
+};
+const clone = (s: Structure): Structure => structuredClone(s);
+const parentOf = (path: string): string =>
+  path.slice(0, Math.max(0, path.lastIndexOf("/")));
+const nameOf = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
+const within = (path: string, root: string): boolean =>
+  path === root || path.startsWith(`${root}/`);
 
-/** Build a Draft from a snapshot reply whose blobs are already full-canvas RGBA (wire.toRgba). @returns {Draft} */
-export function fromSnapshot(reply, rgbaBlobs) {
+/** Build a Draft from a snapshot reply whose blobs are already full-canvas RGBA (wire.toRgba). */
+export const fromSnapshot = (
+  reply: SnapshotReply,
+  rgbaBlobs: readonly Uint8Array[]
+): Draft => {
   const { sprite: s } = reply;
   const size = s.width * s.height * 4;
-  /** @type {Structure} */
-  const structure = {
+  const structure: Structure = {
     durations: reply.frames.map((f) => f.duration),
     layers: reply.layers.map((l) => ({
-      path: l.path,
-      from: l.path,
-      visible: l.visible,
-      opacity: l.opacity,
       blend: l.blend,
+      from: l.path,
       group: l.group,
+      opacity: l.opacity,
+      path: l.path,
+      visible: l.visible,
     })),
     tags: reply.tags.map((t) => ({ ...t })),
   };
-  const cels = new Map();
-  const linked = new Map();
+  const cels = new Map<CelKey, CelBuf>();
+  const linked = new Map<CelKey, CelBuf>();
   for (const c of reply.cels) {
     const bytes = rgbaBlobs[c.blob];
     if (!bytes || bytes.length !== size) {
@@ -88,10 +180,9 @@ export function fromSnapshot(reply, rgbaBlobs) {
     sprite: { ...s, palette: [...reply.palette], selection: reply.selection },
     structure,
   };
-}
+};
 
-/** @returns {Layer} */
-function layerOf(d, path) {
+const layerOf = (d: Draft, path: string): Layer => {
   const l = d.structure.layers.find((x) => x.path === path);
   if (!l) {
     throw new Error(
@@ -99,21 +190,25 @@ function layerOf(d, path) {
     );
   }
   return l;
-}
+};
 
-function checkFrame(d, frame) {
+const checkFrame = (d: Draft, frame: number): void => {
   const n = d.structure.durations.length;
   if (!Number.isInteger(frame) || frame < 0 || frame >= n) {
     throw new Error(
       `Frame ${frame} does not exist; the sprite has ${n} frame${n === 1 ? "" : "s"} (0-${n - 1}).`
     );
   }
-}
+};
 
-const canvasBytes = (d) => d.sprite.width * d.sprite.height * 4;
+const canvasBytes = (d: Draft): number => d.sprite.width * d.sprite.height * 4;
 
 /** The writable buffer for a cel; creates `cur` from `base` (or a transparent canvas) on first call. */
-export function writable(d, layer, frame) {
+export const writable = (
+  d: Draft,
+  layer: string,
+  frame: number
+): Uint8Array => {
   const l = layerOf(d, layer);
   if (l.group) {
     throw new Error(
@@ -124,25 +219,38 @@ export function writable(d, layer, frame) {
   const key = celKey(layer, frame);
   let buf = d.cels.get(key);
   if (!buf) {
-    d.cels.set(key, (buf = { base: null, cur: null, link: null }));
+    buf = { base: null, cur: null, link: null };
+    d.cels.set(key, buf);
   }
-  buf.cur ??= buf.base ? buf.base.slice() : new Uint8Array(canvasBytes(d));
+  buf.cur ??= buf.base
+    ? new Uint8Array(buf.base)
+    : new Uint8Array(canvasBytes(d));
   return buf.cur;
-}
+};
 
 /** Read-only pixels of a cel: cur, else base, else a fresh transparent canvas. Callers must not write to it. */
-export function readable(d, layer, frame) {
+export const readable = (
+  d: Draft,
+  layer: string,
+  frame: number
+): Uint8Array => {
   layerOf(d, layer);
   checkFrame(d, frame);
   const buf = d.cels.get(celKey(layer, frame));
   return buf?.cur ?? buf?.base ?? new Uint8Array(canvasBytes(d));
-}
+};
+
+const isDuration = (x: unknown): x is number => typeof x === "number" && x > 0;
 
 /**
  * Set the frame count. New frames copy every layer's last frame. `durations`: one number for every frame, an
  * array of `count` numbers, or undefined to keep existing durations and give new frames the last one.
  */
-export function setFrames(d, count, durations) {
+export const setFrames = (
+  d: Draft,
+  count: number,
+  durations?: unknown
+): void => {
   if (!Number.isInteger(count) || count < 1) {
     throw new Error(`Frame count must be a whole number >= 1, got ${count}.`);
   }
@@ -153,47 +261,122 @@ export function setFrames(d, count, durations) {
       `durations has ${durations.length} entries for ${count} frames.`
     );
   }
-  for (let f = n; f < count; f++) {
+  for (let f = n; f < count; f += 1) {
     for (const l of d.structure.layers) {
       if (l.group) {
         continue;
       }
       const last = d.cels.get(celKey(l.path, n - 1));
       const src = last?.cur ?? last?.base;
-      // a frame that existed at snapshot (shrunk, then grown again) keeps its base so CAS still matches Aseprite
+      // A frame that existed at snapshot (shrunk, then grown again) keeps its base so CAS still matches Aseprite.
       const base = d.cels.get(celKey(l.path, f))?.base ?? null;
       if (src || base) {
         d.cels.set(celKey(l.path, f), {
           base,
-          cur: src ? src.slice() : new Uint8Array(canvasBytes(d)),
+          cur: src ? new Uint8Array(src) : new Uint8Array(canvasBytes(d)),
           link: null,
         });
       }
     }
   }
-  const next = Array.from({ length: count }, (_, f) =>
-    Array.isArray(durations)
-      ? durations[f]
-      : typeof durations === "number"
-        ? durations
-        : old[Math.min(f, n - 1)]
-  );
-  if (!next.every((x) => typeof x === "number" && x > 0)) {
+  const durationOf = (f: number): unknown => {
+    if (Array.isArray(durations)) {
+      return durations[f];
+    }
+    if (typeof durations === "number") {
+      return durations;
+    }
+    return old[Math.min(f, n - 1)];
+  };
+  const next = Array.from({ length: count }, (_, f) => durationOf(f));
+  if (!next.every((x) => isDuration(x))) {
     throw new Error(
       "Frame durations must be positive numbers of milliseconds."
     );
   }
   d.structure.durations = next;
-}
+};
+
+const removeLayer = (d: Draft, name: string): void => {
+  layerOf(d, name);
+  d.structure.layers = d.structure.layers.filter((l) => !within(l.path, name));
+  for (const key of d.cels.keys()) {
+    if (within(parseKey(key).layer, name)) {
+      d.cels.delete(key);
+    }
+  }
+};
+
+const addLayer = (d: Draft, name: string, below?: string): Layer => {
+  const { layers } = d.structure;
+  if (below !== undefined) {
+    layerOf(d, below);
+  }
+  const l: Layer = {
+    below,
+    blend: "normal",
+    from: null,
+    group: false,
+    opacity: 255,
+    path: name,
+    seq: d.seq,
+    visible: true,
+  };
+  d.seq += 1;
+  const at =
+    below === undefined
+      ? layers.length
+      : layers.findIndex((x) => x.path === below);
+  layers.splice(at, 0, l);
+  return l;
+};
+
+const renameLayer = (d: Draft, l: Layer, rename: string): void => {
+  const { layers } = d.structure;
+  if (!rename || rename.includes("/")) {
+    throw new Error(
+      `rename must be a plain layer name, got ${JSON.stringify(rename)}.`
+    );
+  }
+  const parent = parentOf(l.path);
+  const to = parent ? `${parent}/${rename}` : rename;
+  if (layers.some((x) => x.path === to)) {
+    throw new Error(`A layer named '${to}' already exists.`);
+  }
+  const from = l.path;
+  const move = (p: string): string => to + p.slice(from.length);
+  for (const x of layers) {
+    if (within(x.path, from)) {
+      x.path = move(x.path);
+    }
+  }
+  for (const x of layers) {
+    if (x.below !== undefined && within(x.below, from)) {
+      x.below = move(x.below);
+    }
+  }
+  const moved: [CelKey, CelKey, CelBuf][] = [];
+  for (const [key, buf] of d.cels) {
+    const { layer, frame } = parseKey(key);
+    if (within(layer, from)) {
+      moved.push([key, celKey(move(layer), frame), buf]);
+    }
+  }
+  for (const [key, next, buf] of moved) {
+    d.cels.delete(key);
+    d.cels.set(next, buf);
+  }
+};
 
 /**
  * Stage a layer change. An unknown name creates a layer, on top or below `below`.
  * `rename` is the new name inside the same group; `remove` drops the layer (and a group's children).
- * @param {{ below?: string, visible?: boolean, opacity?: number, rename?: string, remove?: boolean }} [o]
  */
-export function stageLayer(d, name, o = {}) {
-  const { layers } = d.structure;
-  const existing = layers.find((l) => l.path === name);
+export const stageLayer = (
+  d: Draft,
+  name: string,
+  o: LayerOptions = {}
+): void => {
   if (
     o.opacity !== undefined &&
     !(Number.isInteger(o.opacity) && o.opacity >= 0 && o.opacity <= 255)
@@ -201,34 +384,12 @@ export function stageLayer(d, name, o = {}) {
     throw new Error(`opacity must be a whole number 0-255, got ${o.opacity}.`);
   }
   if (o.remove) {
-    layerOf(d, name);
-    d.structure.layers = layers.filter((l) => !within(l.path, name));
-    for (const key of [...d.cels.keys()]) {
-      if (within(parseKey(key).layer, name)) d.cels.delete(key);
-    }
+    removeLayer(d, name);
     return;
   }
-  let l = existing;
-  if (!l) {
-    if (o.below !== undefined) {
-      layerOf(d, o.below);
-    }
-    l = {
-      below: o.below,
-      blend: "normal",
-      from: null,
-      group: false,
-      opacity: 255,
-      path: name,
-      seq: d.seq++,
-      visible: true,
-    };
-    const at =
-      o.below === undefined
-        ? layers.length
-        : layers.findIndex((x) => x.path === o.below);
-    layers.splice(at, 0, l);
-  }
+  const l =
+    d.structure.layers.find((x) => x.path === name) ??
+    addLayer(d, name, o.below);
   if (o.visible !== undefined) {
     l.visible = o.visible;
   }
@@ -236,126 +397,110 @@ export function stageLayer(d, name, o = {}) {
     l.opacity = o.opacity;
   }
   if (o.rename !== undefined && o.rename !== nameOf(l.path)) {
-    if (!o.rename || o.rename.includes("/")) {
-      throw new Error(
-        `rename must be a plain layer name, got ${JSON.stringify(o.rename)}.`
-      );
-    }
-    const parent = parentOf(l.path);
-    const to = parent ? `${parent}/${o.rename}` : o.rename;
-    if (layers.some((x) => x.path === to)) {
-      throw new Error(`A layer named '${to}' already exists.`);
-    }
-    const from = l.path;
-    const move = (p) => to + p.slice(from.length);
-    for (const x of layers) {
-      if (within(x.path, from)) x.path = move(x.path);
-    }
-    for (const x of layers) {
-      if (x.below !== undefined && within(x.below, from))
-        x.below = move(x.below);
-    }
-    for (const [key, buf] of [...d.cels]) {
-      const { layer, frame } = parseKey(key);
-      if (!within(layer, from)) {
-        continue;
-      }
-      d.cels.delete(key);
-      d.cels.set(celKey(move(layer), frame), buf);
-    }
+    renameLayer(d, l, o.rename);
   }
-}
+};
 
 /** Create or change a tag over frames from..to (0-based, inclusive). */
-export function stageTag(d, name, from, to, { direction = "forward" } = {}) {
+export const stageTag = (
+  d: Draft,
+  name: string,
+  from: number,
+  to: number,
+  { direction = "forward" }: { direction?: TagDirection } = {}
+): void => {
   checkFrame(d, from);
   checkFrame(d, to);
   if (from > to) {
     throw new Error(`Tag '${name}': from (${from}) is after to (${to}).`);
   }
-  if (!["forward", "reverse", "pingpong"].includes(direction)) {
+  if (!TAG_DIRECTIONS.has(direction)) {
     throw new Error(`Tag direction must be forward, reverse or pingpong.`);
   }
   const tag = { direction, from, name, to };
   const i = d.structure.tags.findIndex((t) => t.name === name);
-  if (i !== -1) {
-    d.structure.tags[i] = tag;
-  } else {
+  if (i === -1) {
     d.structure.tags.push(tag);
+  } else {
+    d.structure.tags[i] = tag;
   }
-}
+};
 
-const visibleKey = (a, i) =>
+const visibleKey = (a: Uint8Array, i: number): number =>
   a[i + 3] === 0
     ? 0
     : ((a[i] << 24) | (a[i + 1] << 16) | (a[i + 2] << 8) | a[i + 3]) >>> 0;
 
 /** Pixels whose visible value differs; null is a transparent canvas. */
-function diffCount(a, b) {
+const diffCount = (a: Uint8Array | null, b: Uint8Array | null): number => {
   const len = (a ?? b)?.length ?? 0;
   let n = 0;
   for (let i = 0; i < len; i += 4) {
-    if ((a ? visibleKey(a, i) : 0) !== (b ? visibleKey(b, i) : 0)) n++;
+    if ((a ? visibleKey(a, i) : 0) !== (b ? visibleKey(b, i) : 0)) {
+      n += 1;
+    }
   }
   return n;
-}
-const isEmpty = (a) => diffCount(a, null) === 0;
+};
+const isEmpty = (a: Uint8Array): boolean => diffCount(a, null) === 0;
 
-/**
- * Diff the draft into a commit plan. Writes list only cels whose pixels changed, once per linked group;
- * an all-transparent result deletes the cel. Indexed sprites get a `palette.append` for colours not in the palette.
- * @returns {Plan}
- */
-export function plan(d) {
-  const { baseStructure: was, structure: now } = d;
-  const ops = [];
+const changedProps = (l: Layer, b: Layer | null | undefined): LayerProps => ({
+  ...(l.visible !== (b?.visible ?? true) && { visible: l.visible }),
+  ...(l.opacity !== (b?.opacity ?? 255) && { opacity: l.opacity }),
+});
 
+const depth = (path: string): number => path.split("/").length;
+
+/** Removals, property changes, renames (children first) and additions, in the order plugin.lua applies them. */
+const layerOps = (was: Structure, now: Structure): Op[] => {
+  const ops: Op[] = [];
   const kept = new Set(now.layers.map((l) => l.from));
   const removed = was.layers
     .filter((l) => !kept.has(l.path))
     .map((l) => l.path);
   for (const path of removed) {
-    if (!removed.includes(parentOf(path)))
+    if (!removed.includes(parentOf(path))) {
       ops.push({ op: "layer.remove", path });
+    }
   }
-
-  const props = (l, b) => ({
-    ...(l.visible !== (b?.visible ?? true) && { visible: l.visible }),
-    ...(l.opacity !== (b?.opacity ?? 255) && { opacity: l.opacity }),
-  });
-  const renames = [];
+  const renames: { from: string; path: string }[] = [];
   for (const l of now.layers) {
     if (l.from === null) {
       continue;
     }
-    const b = was.layers.find((x) => x.path === l.from);
-    const p = props(l, b);
+    const { from } = l;
+    const b = was.layers.find((x) => x.path === from);
+    const p = changedProps(l, b);
     if (Object.keys(p).length) {
-      ops.push({ op: "layer.set", path: l.from, ...p });
+      ops.push({ op: "layer.set", path: from, ...p });
     }
-    if (nameOf(l.path) !== nameOf(l.from)) {
-      renames.push(l);
+    if (nameOf(l.path) !== nameOf(from)) {
+      renames.push({ from, path: l.path });
     }
   }
-  // children first, so a group rename never invalidates a child's path
-  renames.sort((a, b) => b.from.split("/").length - a.from.split("/").length);
-  for (const l of renames) {
+  // Children first, so a group rename never invalidates a child's path.
+  for (const l of renames.toSorted((a, b) => depth(b.from) - depth(a.from))) {
     ops.push({ op: "layer.set", path: l.from, rename: nameOf(l.path) });
   }
-  for (const l of now.layers
+  const added = now.layers
     .filter((x) => x.from === null)
-    .sort((a, b) => a.seq - b.seq)) {
+    .toSorted((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  for (const l of added) {
     ops.push({
       op: "layer.add",
       path: l.path,
       ...(l.below !== undefined && { below: l.below }),
     });
-    const p = props(l, null);
+    const p = changedProps(l, null);
     if (Object.keys(p).length) {
       ops.push({ op: "layer.set", path: l.path, ...p });
     }
   }
+  return ops;
+};
 
+const timelineOps = (was: Structure, now: Structure): Op[] => {
+  const ops: Op[] = [];
   if (
     now.durations.length !== was.durations.length ||
     now.durations.some((x, i) => x !== was.durations[i])
@@ -377,12 +522,15 @@ export function plan(d) {
       ops.push({ op: "tag.set", ...t });
     }
   }
+  return ops;
+};
 
-  const frames = now.durations.length;
-  const layerPaths = new Set(now.layers.map((l) => l.path));
-  /** @type {Write[]} */
-  const writes = [];
-  const seen = new Set();
+/** Cels whose pixels changed, once per linked group; an all-transparent result deletes the cel. */
+const celWrites = (d: Draft): { writes: CelWrite[]; pixels: number } => {
+  const frames = d.structure.durations.length;
+  const layerPaths = new Set(d.structure.layers.map((l) => l.path));
+  const writes: CelWrite[] = [];
+  const seen = new Set<CelBuf>();
   let pixels = 0;
   for (const [key, buf] of d.cels) {
     const { layer, frame } = parseKey(key);
@@ -390,11 +538,9 @@ export function plan(d) {
       continue;
     }
     seen.add(buf);
-    if (!buf.cur) {
-      continue;
-    }
-    const n = diffCount(buf.base, buf.cur);
-    if (n === 0) {
+    const { cur } = buf;
+    const n = cur ? diffCount(buf.base, cur) : 0;
+    if (!cur || n === 0) {
       continue;
     }
     pixels += n;
@@ -403,43 +549,62 @@ export function plan(d) {
       frame,
       key,
       layer,
-      next: isEmpty(buf.cur) ? null : buf.cur.slice(),
+      next: isEmpty(cur) ? null : new Uint8Array(cur),
     });
   }
+  return { pixels, writes };
+};
 
-  let { palette } = d.sprite;
-  if (d.sprite.colorMode === "indexed") {
-    const missing = new Set();
-    for (const w of writes) {
-      if (w.next) {
-        for (const c of fromRgba(
-          w.next,
-          "indexed",
-          palette,
-          d.sprite.transparentIndex
-        ).missing)
-          missing.add(c);
-      }
+/** Colours the writes use that the indexed palette lacks. */
+const missingColors = (d: Draft, writes: CelWrite[]): Set<string> => {
+  const missing = new Set<string>();
+  for (const w of writes) {
+    if (!w.next) {
+      continue;
     }
-    if (missing.size) {
-      if (palette.length + missing.size > 256) {
-        throw new Error(
-          `The indexed palette would need ${palette.length + missing.size} colours (max 256). Use fewer colours or convert the sprite to RGB.`
-        );
-      }
-      ops.unshift({ colors: [...missing], op: "palette.append" });
-      palette = [...palette, ...missing];
+    const { palette, transparentIndex } = d.sprite;
+    for (const c of fromRgba(w.next, "indexed", palette, transparentIndex)
+      .missing) {
+      missing.add(c);
     }
   }
+  return missing;
+};
+
+/**
+ * Diff the draft into a commit plan. Writes list only cels whose pixels changed, once per linked group;
+ * an all-transparent result deletes the cel. Indexed sprites get a `palette.append` for colours not in the palette.
+ */
+export const plan = (d: Draft): Plan => {
+  const { baseStructure: was, structure: now } = d;
+  const ops = [...layerOps(was, now), ...timelineOps(was, now)];
+  const { writes, pixels } = celWrites(d);
+  let { palette } = d.sprite;
+  const missing =
+    d.sprite.colorMode === "indexed"
+      ? missingColors(d, writes)
+      : new Set<string>();
+  if (missing.size) {
+    if (palette.length + missing.size > 256) {
+      throw new Error(
+        `The indexed palette would need ${palette.length + missing.size} colours (max 256). Use fewer colours or convert the sprite to RGB.`
+      );
+    }
+    ops.unshift({ colors: [...missing], op: "palette.append" });
+    palette = [...palette, ...missing];
+  }
   return { ops, palette, pixels, writes };
-}
+};
 
 /**
  * 3-way merge for one cel: base (our snapshot), ours (cur), theirs (Aseprite now); null = no cel.
  * Ours where ours != base, theirs elsewhere; where both changed differently the artist wins.
- * @returns {{ merged: Uint8Array, kept: number, lost: number }}
  */
-export function merge3(base, ours, theirs) {
+export const merge3 = (
+  base: Uint8Array | null,
+  ours: Uint8Array | null,
+  theirs: Uint8Array | null
+): MergeResult => {
   const len = (base ?? ours ?? theirs)?.length ?? 0;
   const merged = new Uint8Array(len);
   let kept = 0;
@@ -451,9 +616,9 @@ export function merge3(base, ours, theirs) {
     const oursChanged = o !== b;
     const theirsChanged = t !== b;
     if (oursChanged && theirsChanged && o !== t) {
-      lost++;
+      lost += 1;
     } else if (oursChanged) {
-      kept++;
+      kept += 1;
     }
     const src = oursChanged && !theirsChanged ? ours : theirs;
     if (src) {
@@ -461,10 +626,14 @@ export function merge3(base, ours, theirs) {
     }
   }
   return { kept, lost, merged };
-}
+};
 
 /** A commit conflict on `key`: merge our edits onto what Aseprite holds now, which becomes the new base. */
-export function resolveConflict(d, key, theirs) {
+export const resolveConflict = (
+  d: Draft,
+  key: CelKey,
+  theirs: Uint8Array | null
+): { kept: number; lost: number } => {
   const buf = d.cels.get(key);
   if (!buf) {
     throw new Error(`No cel ${key} in the draft.`);
@@ -473,24 +642,26 @@ export function resolveConflict(d, key, theirs) {
   buf.base = theirs;
   buf.cur = merged;
   return { kept, lost };
-}
+};
 
 /** After a successful commit: base := what was written, staged structure becomes the base. A second plan is empty. */
-export function rebase(d, /** @type {Plan} */ applied) {
+export const rebase = (d: Draft, applied: Plan): void => {
   for (const w of applied.writes) {
     const buf = d.cels.get(w.key);
     if (!buf) {
       continue;
     }
     buf.base = w.next;
-    // edits made while the commit was in flight stay dirty against the new base
+    // Edits made while the commit was in flight stay dirty against the new base.
     if (buf.cur && diffCount(buf.cur, w.next) === 0) {
       buf.cur = null;
     }
   }
   const frames = d.structure.durations.length;
-  for (const key of [...d.cels.keys()]) {
-    if (parseKey(key).frame >= frames) d.cels.delete(key);
+  for (const key of d.cels.keys()) {
+    if (parseKey(key).frame >= frames) {
+      d.cels.delete(key);
+    }
   }
   for (const l of d.structure.layers) {
     l.from = l.path;
@@ -499,4 +670,4 @@ export function rebase(d, /** @type {Plan} */ applied) {
   }
   d.baseStructure = clone(d.structure);
   d.sprite.palette = [...applied.palette];
-}
+};
