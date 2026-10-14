@@ -116,15 +116,16 @@ test("outline outside and inside use the given colour", () => {
   assert.deepEqual(show(ins), ["kkk", "krk", "kkk"]);
 });
 
+const lum = (c: string) =>
+  Number.parseInt(c.slice(1, 3), 16) +
+  Number.parseInt(c.slice(3, 5), 16) +
+  Number.parseInt(c.slice(5, 7), 16);
+
 test("selective outline darkens the bordering colour, darker on the shadow side", () => {
   const cv = canvas(["...", ".r.", "..."]);
   assert.equal(R.outline(cv, null as never, { rect: [0, 0, 3, 3] }), 4);
   const { palette, rows } = R.read(cv, { palette: { r: "#ff0000" } });
   const at = (x: number, y: number) => palette[rows[y][x]];
-  const lum = (c: string) =>
-    Number.parseInt(c.slice(1, 3), 16) +
-    Number.parseInt(c.slice(3, 5), 16) +
-    Number.parseInt(c.slice(5, 7), 16);
   assert.equal(rows[0][0], ".");
   assert.ok(lum(at(1, 0)) > lum(at(1, 2)), "top edge faces the light");
   assert.ok(lum(at(0, 1)) > lum(at(2, 1)), "left edge faces the light");

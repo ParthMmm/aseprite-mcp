@@ -33,7 +33,7 @@ test("the extension manifest and handlers.lua agree on the version", () => {
   const lua = readFileSync(
     nodePath.join(root, "extension/handlers.lua"),
     "utf-8"
-  ).match(/VERSION = "([^"]+)"/u)?.[1];
+  ).match(/VERSION = "(?<version>[^"]+)"/u)?.groups?.version;
   assert.equal(lua, extension);
 });
 

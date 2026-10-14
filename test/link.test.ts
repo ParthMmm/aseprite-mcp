@@ -29,10 +29,7 @@ interface ExtensionReply {
 interface ExtensionOptions {
   token?: string;
   extension?: string;
-  onRequest?: (
-    msg: WireMessage,
-    blobs: Uint8Array[]
-  ) => ExtensionReply | undefined;
+  onRequest?: (msg: WireMessage, blobs: Uint8Array[]) => ExtensionReply | null;
 }
 
 // Connects and pairs like plugin.lua. `onRequest(msg, blobs)` returns `{ result, blobs? }` or `{ error }` or undefined (no reply).
@@ -180,7 +177,7 @@ test("{ok:false} rejects with the extension's message", () =>
 test("a request without a reply times out; snapshot and commit get the long timeout", () =>
   withLink({ longTimeoutMs: 300, timeoutMs: 50 }, async (link) => {
     const { ws } = await fakeExtension(link.status().port, {
-      onRequest: () => undefined,
+      onRequest: () => null,
     });
     const t0 = Date.now();
     await assert.rejects(link.request("info"), {
@@ -197,7 +194,7 @@ test("requests fail fast when Aseprite is not connected, and pending ones fail o
   withLink({}, async (link) => {
     await assert.rejects(link.request("info"), { message: NOT_CONNECTED });
     const { ws } = await fakeExtension(link.status().port, {
-      onRequest: () => undefined,
+      onRequest: () => null,
     });
     const pending = link.request("info");
     ws.close();

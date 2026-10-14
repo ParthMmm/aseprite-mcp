@@ -46,17 +46,19 @@ const connect = async (query = "") => {
 
 // Raw request so the test controls the Host header (fetch does not allow overriding it).
 const rawGet = (path: string, headers: Record<string, string>) => {
-  return new Promise<number | undefined>((done, fail) => {
-    const req = request(
-      { headers, host: "127.0.0.1", path, port: ctx.httpPort },
-      (res) => {
-        res.resume();
-        res.on("end", () => done(res.statusCode));
-      }
-    );
-    req.on("error", fail);
-    req.end();
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<
+    number | undefined
+  >();
+  const req = request(
+    { headers, host: "127.0.0.1", path, port: ctx.httpPort },
+    (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode));
+    }
+  );
+  req.on("error", reject);
+  req.end();
+  return promise;
 };
 
 test("/health reports version, pid and the extension status", async () => {
@@ -139,7 +141,7 @@ test("?images=inline adds one PNG image block per view", async () => {
     name: "execute",
   });
   const [text, image] = blocks(res);
-  const path = JSON.parse(text?.text ?? "").images[0];
+  const [path] = JSON.parse(text?.text ?? "").images;
   assert.deepEqual(image, {
     data: readFileSync(path).toString("base64"),
     mimeType: "image/png",
@@ -158,7 +160,8 @@ test("a second daemon on the same port exits 0 and the first keeps serving", asy
   const second = serve(ctx.env);
   const { code } = await second.exited;
   assert.equal(code, 0);
-  assert.equal((await waitForHealth(ctx.base)).pid, daemon.child.pid);
+  const { pid } = await waitForHealth(ctx.base);
+  assert.equal(pid, daemon.child.pid);
 });
 
 test("foreign Host headers and non-loopback Origins are rejected", async () => {
@@ -185,6 +188,8 @@ test("foreign Host headers and non-loopback Origins are rejected", async () => {
 test("POST /shutdown stops the daemon with exit code 0", async () => {
   const res = await fetch(`${ctx.base}/shutdown`, { method: "POST" });
   assert.equal(res.status, 200);
-  assert.equal((await daemon.exited).code, 0);
-  assert.equal(await fetch(`${ctx.base}/health`).catch(() => null), null);
+  const { code } = await daemon.exited;
+  assert.equal(code, 0);
+  const down = await fetch(`${ctx.base}/health`).catch(() => null);
+  assert.equal(down, null);
 });

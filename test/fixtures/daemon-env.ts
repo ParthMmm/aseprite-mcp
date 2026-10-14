@@ -87,9 +87,9 @@ export const serve = (
   });
   let stderr = "";
   child.stderr?.on("data", (d: Buffer) => (stderr += d));
-  const exited = once(child, "exit").then(([code]) => ({
-    code: code as number | null,
-    stderr,
-  }));
+  const exited = (async () => {
+    const [code] = await once(child, "exit");
+    return { code: code as number | null, stderr };
+  })();
   return { child, exited };
 };

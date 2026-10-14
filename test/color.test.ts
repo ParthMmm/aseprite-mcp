@@ -47,9 +47,10 @@ test("ramp keeps the base in the middle and runs dark to light", () => {
   }
 });
 
+const hue = (c: string) =>
+  rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[2];
+
 test("hueShift 0 keeps the hue; a larger shift moves the shadow further", () => {
-  const hue = (c: string) =>
-    rgbToOklch(...(parseHex(c).slice(0, 3) as [number, number, number]))[2];
   const base = hue("#38b764");
   const flat = ramp("#38b764", "abc", { hueShift: 0 });
   assert.ok(Math.abs(hue(flat.a) - base) < 1);

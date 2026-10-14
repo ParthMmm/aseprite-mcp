@@ -201,14 +201,14 @@ test("an artist edit between snapshot and commit merges and reports lost pixels"
     }
     injected = true;
     link.artist(1, "Layer 1", 0, (bytes, w) => {
-      bytes.set([0, 0, 255, 255], (0 * w + 1) * 4);
+      bytes.set([0, 0, 255, 255], 4);
       bytes.set([255, 255, 255, 255], (5 * w + 5) * 4);
     });
   };
   const r = await run(
     `(await sprite()).cel("Layer 1").px([[0, 0, "#00ff00"], [1, 0, "#00ff00"]])`
   );
-  const rOk = pass(r);
+  pass(r);
   assert.equal(r.commit.length, 1);
   assert.equal(r.commit[0].merged, 1);
   assert.equal(r.commit[0].lost, 1);

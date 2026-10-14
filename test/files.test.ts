@@ -16,13 +16,13 @@ const recordingLink = (): Link & { calls: Call[] } => {
   const calls: Call[] = [];
   return {
     calls,
-    async request<T = unknown>(cmd: string, args: object = {}) {
+    request<T = unknown>(cmd: string, args: object = {}) {
       const call = { args, cmd } as Call;
       calls.push(call);
       if (cmd === "backup") {
         writeFileSync(call.args.path, "copy");
       }
-      return { blobs: [], result: {} as T };
+      return Promise.resolve({ blobs: [], result: {} as T });
     },
     status: () => ({
       connected: true,

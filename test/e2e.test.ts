@@ -40,7 +40,7 @@ test("the stdio proxy starts a daemon, lists the one tool and inlines views", as
   const client = await proxyClient(ctx.env);
   const { tools } = await client.listTools();
   assert.deepEqual(
-    tools.map((t) => t.name),
+    tools.map((tool) => tool.name),
     ["execute"]
   );
 
@@ -59,11 +59,8 @@ test("the stdio proxy starts a daemon, lists the one tool and inlines views", as
 
   const { pid } = await waitForHealth(ctx.base);
   await client.close();
-  assert.equal(
-    (await waitForHealth(ctx.base)).pid,
-    pid,
-    "the daemon outlives the proxy"
-  );
+  const { pid: pidAfter } = await waitForHealth(ctx.base);
+  assert.equal(pidAfter, pid, "the daemon outlives the proxy");
 });
 
 test("the proxy reuses a running daemon instead of starting another", async (t) => {
@@ -85,7 +82,8 @@ test("the proxy reuses a running daemon instead of starting another", async (t) 
       connected: false,
     }
   );
-  assert.equal((await waitForHealth(ctx.base)).pid, daemon.child.pid);
+  const { pid } = await waitForHealth(ctx.base);
+  assert.equal(pid, daemon.child.pid);
   await client.close();
 });
 
@@ -105,5 +103,6 @@ test("status and stop talk to the daemon", async (t) => {
   assert.equal(status.status, 0);
   assert.equal(JSON.parse(status.stdout).pid, daemon.child.pid);
   assert.match(run("stop").stdout, /Stopped/u);
-  assert.equal((await daemon.exited).code, 0);
+  const { code } = await daemon.exited;
+  assert.equal(code, 0);
 });

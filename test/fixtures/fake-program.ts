@@ -8,35 +8,33 @@ import { encodePng } from "../../src/render.ts";
 
 export const DESCRIPTION = "FAKE execute: test runtime";
 
-export const createRuntime = ({ link, viewsDir }: RuntimeOptions) => {
-  return {
-    async execute(code: string): Promise<Envelope> {
-      if (code === "throw") {
-        return {
-          commit: [],
-          discarded: [],
-          error: { kind: "ExecutionFailure", message: "Error: boom" },
-          images: [],
-          ms: 0,
-          ok: false,
-        };
-      }
-      const images: string[] = [];
-      if (code === "view") {
-        const path = nodePath.join(
-          viewsDir,
-          `fake-${process.pid}-${Date.now()}.png`
-        );
-        await writeFile(path, encodePng(1, 1, Uint8Array.of(255, 0, 0, 255)));
-        images.push(path);
-      }
+export const createRuntime = ({ link, viewsDir }: RuntimeOptions) => ({
+  async execute(code: string): Promise<Envelope> {
+    if (code === "throw") {
       return {
         commit: [],
-        images,
+        discarded: [],
+        error: { kind: "ExecutionFailure", message: "Error: boom" },
+        images: [],
         ms: 0,
-        ok: true,
-        value: { code, connected: link.status().connected },
+        ok: false,
       };
-    },
-  };
-};
+    }
+    const images: string[] = [];
+    if (code === "view") {
+      const path = nodePath.join(
+        viewsDir,
+        `fake-${process.pid}-${Date.now()}.png`
+      );
+      await writeFile(path, encodePng(1, 1, Uint8Array.of(255, 0, 0, 255)));
+      images.push(path);
+    }
+    return {
+      commit: [],
+      images,
+      ms: 0,
+      ok: true,
+      value: { code, connected: link.status().connected },
+    };
+  },
+});

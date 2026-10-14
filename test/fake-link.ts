@@ -79,7 +79,112 @@ const within = (path: string, root: string): boolean =>
 const equal = (a: Uint8Array, b: Uint8Array): boolean =>
   a.length === b.length && a.every((x, i) => x === b[i]);
 
-class StructureError extends Error {}
+class StructureError extends Error {
+  override name = "StructureError";
+}
+
+const renameLayer = (s: State, l: FakeLayer, rename: string) => {
+  const from = l.path;
+  const to = from.includes("/")
+    ? from.slice(0, from.lastIndexOf("/") + 1) + rename
+    : rename;
+  for (const x of s.layers) {
+    if (within(x.path, from)) {
+      x.path = to + x.path.slice(from.length);
+    }
+  }
+  for (const [k, v] of s.cels.entries().toArray()) {
+    const at = k.lastIndexOf("@");
+    if (!within(k.slice(0, at), from)) {
+      continue;
+    }
+    s.cels.delete(k);
+    s.cels.set(to + k.slice(from.length), v);
+  }
+};
+
+const applyOp = (s: State, op: Op) => {
+  const find = (path: string): FakeLayer => {
+    const l = s.layers.find((x) => x.path === path);
+    if (!l) {
+      throw new StructureError(`layer '${path}' does not exist`);
+    }
+    return l;
+  };
+  switch (op.op) {
+    case "layer.add": {
+      if (s.layers.some((x) => x.path === op.path)) {
+        throw new StructureError(`layer '${op.path}' already exists`);
+      }
+      const at =
+        op.below === undefined
+          ? s.layers.length
+          : s.layers.indexOf(find(op.below));
+      s.layers.splice(at, 0, {
+        blend: "normal",
+        group: false,
+        opacity: 255,
+        path: op.path,
+        visible: true,
+      });
+      return;
+    }
+    case "layer.set": {
+      const l = find(op.path);
+      if (op.visible !== undefined) {
+        l.visible = op.visible;
+      }
+      if (op.opacity !== undefined) {
+        l.opacity = op.opacity;
+      }
+      if (op.rename !== undefined) {
+        renameLayer(s, l, op.rename);
+      }
+      return;
+    }
+    case "layer.remove": {
+      find(op.path);
+      s.layers = s.layers.filter((x) => !within(x.path, op.path));
+      for (const k of s.cels.keys()) {
+        if (within(k.slice(0, k.lastIndexOf("@")), op.path)) {
+          s.cels.delete(k);
+        }
+      }
+      return;
+    }
+    case "frames.set": {
+      s.frames = op.durations.map((duration) => ({ duration }));
+      for (const k of s.cels.keys()) {
+        if (Number(k.slice(k.lastIndexOf("@") + 1)) >= op.count) {
+          s.cels.delete(k);
+        }
+      }
+      return;
+    }
+    case "tag.set": {
+      const tag = {
+        direction: op.direction,
+        from: op.from,
+        name: op.name,
+        to: op.to,
+      };
+      const i = s.tags.findIndex((t) => t.name === op.name);
+      if (i === -1) {
+        s.tags.push(tag);
+      } else {
+        s.tags[i] = tag;
+      }
+      return;
+    }
+    case "palette.append": {
+      s.palette.push(...op.colors);
+      return;
+    }
+    default: {
+      throw new Error(`unknown op ${(op as { op: string }).op}`);
+    }
+  }
+};
 
 export const createFakeLink = (): FakeLink => {
   const sprites = new Map<number, Entry>();
@@ -109,105 +214,6 @@ export const createFakeLink = (): FakeLink => {
       throw new Error(`No open sprite '${ref}'.`);
     }
     return found;
-  };
-
-  const applyOp = (s: State, op: Op) => {
-    const find = (path: string): FakeLayer => {
-      const l = s.layers.find((x) => x.path === path);
-      if (!l) {
-        throw new StructureError(`layer '${path}' does not exist`);
-      }
-      return l;
-    };
-    switch (op.op) {
-      case "layer.add": {
-        if (s.layers.some((x) => x.path === op.path)) {
-          throw new StructureError(`layer '${op.path}' already exists`);
-        }
-        const at =
-          op.below === undefined
-            ? s.layers.length
-            : s.layers.indexOf(find(op.below));
-        s.layers.splice(at, 0, {
-          blend: "normal",
-          group: false,
-          opacity: 255,
-          path: op.path,
-          visible: true,
-        });
-        return;
-      }
-      case "layer.set": {
-        const l = find(op.path);
-        if (op.visible !== undefined) {
-          l.visible = op.visible;
-        }
-        if (op.opacity !== undefined) {
-          l.opacity = op.opacity;
-        }
-        if (op.rename !== undefined) {
-          const from = l.path;
-          const to = from.includes("/")
-            ? from.slice(0, from.lastIndexOf("/") + 1) + op.rename
-            : op.rename;
-          for (const x of s.layers) {
-            if (within(x.path, from)) {
-              x.path = to + x.path.slice(from.length);
-            }
-          }
-          for (const [k, v] of [...s.cels]) {
-            const at = k.lastIndexOf("@");
-            if (!within(k.slice(0, at), from)) {
-              continue;
-            }
-            s.cels.delete(k);
-            s.cels.set(to + k.slice(from.length), v);
-          }
-        }
-        return;
-      }
-      case "layer.remove": {
-        find(op.path);
-        s.layers = s.layers.filter((x) => !within(x.path, op.path));
-        for (const k of [...s.cels.keys()]) {
-          if (within(k.slice(0, k.lastIndexOf("@")), op.path)) {
-            s.cels.delete(k);
-          }
-        }
-        return;
-      }
-      case "frames.set": {
-        s.frames = op.durations.map((duration) => ({ duration }));
-        for (const k of [...s.cels.keys()]) {
-          if (Number(k.slice(k.lastIndexOf("@") + 1)) >= op.count) {
-            s.cels.delete(k);
-          }
-        }
-        return;
-      }
-      case "tag.set": {
-        const tag = {
-          direction: op.direction,
-          from: op.from,
-          name: op.name,
-          to: op.to,
-        };
-        const i = s.tags.findIndex((t) => t.name === op.name);
-        if (i === -1) {
-          s.tags.push(tag);
-        } else {
-          s.tags[i] = tag;
-        }
-        return;
-      }
-      case "palette.append": {
-        s.palette.push(...op.colors);
-        return;
-      }
-      default: {
-        throw new Error(`unknown op ${(op as { op: string }).op}`);
-      }
-    }
   };
 
   const handlers = {
@@ -245,8 +251,8 @@ export const createFakeLink = (): FakeLink => {
           return {
             result: {
               applied: false,
-              reason: "structure",
               message: error.message,
+              reason: "structure",
             },
           };
         }
@@ -255,7 +261,7 @@ export const createFakeLink = (): FakeLink => {
       const blank = new Uint8Array(next.width * next.height * 4);
       const conflicts: { write: number; blob?: number }[] = [];
       const current: Uint8Array[] = [];
-      writes.forEach((w, i) => {
+      for (const [i, w] of writes.entries()) {
         const cur = next.cels.get(key(w.layer, w.frame)) ?? null;
         const base = w.base === null ? null : blobs[w.base];
         if (!equal(cur ?? blank, base ?? blank)) {
@@ -264,7 +270,7 @@ export const createFakeLink = (): FakeLink => {
             ...(cur && { blob: current.push(Uint8Array.from(cur)) - 1 }),
           });
         }
-      });
+      }
       if (conflicts.length) {
         return {
           blobs: current,

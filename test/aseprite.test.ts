@@ -57,6 +57,8 @@ const runAseprite = (): { dir: string; result: LuaResult } => {
   return { dir, result: JSON.parse(readFileSync(out, "utf-8")) };
 };
 
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+
 describe("extension handlers in Aseprite", { skip }, () => {
   const { dir, result } = skip
     ? { dir: "", result: { cases: [] } as LuaResult }
@@ -72,7 +74,6 @@ describe("extension handlers in Aseprite", { skip }, () => {
   }
 
   test("SHA-256 matches node:crypto", () => {
-    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
     assert.deepEqual(result.sha, {
       abc: sha("abc"),
       empty: sha(""),
