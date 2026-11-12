@@ -4,14 +4,17 @@ import { readFileSync } from "node:fs";
 import { env, argv, exit, stderr, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 
-import type { Program, Tailnet } from "../src/daemon.ts";
+import { messageOf } from "../src/check.ts";
+import type { Program } from "../src/daemon.ts";
 import { loadToken } from "../src/files.ts";
 import { health, runProxy, shutdown } from "../src/stdio-proxy.ts";
 import {
   detectTailnet,
   resolveTailnet,
   serveOnTailnet,
+  tailnetEnvComplete,
 } from "../src/tailnet.ts";
+import type { Tailnet } from "../src/tailnet.ts";
 
 const binPath = import.meta.filename;
 const { version } = JSON.parse(
@@ -52,17 +55,19 @@ Environment:
 
 const serve = async (args: string[]): Promise<void> => {
   const tailscale = args.includes("--tailscale");
+  const tailnetEnv = {
+    host: env.ASEPRITE_MCP_TAILNET_HOST,
+    users: env.ASEPRITE_MCP_TAILNET_USERS,
+  };
   let tailnet: Tailnet | null;
   try {
+    const detect = tailscale && !tailnetEnvComplete(tailnetEnv);
     tailnet = resolveTailnet(
-      {
-        host: env.ASEPRITE_MCP_TAILNET_HOST,
-        users: env.ASEPRITE_MCP_TAILNET_USERS,
-      },
-      tailscale ? await detectTailnet(httpPort) : null
+      tailnetEnv,
+      detect ? await detectTailnet(httpPort) : null
     );
   } catch (error) {
-    log((error as Error).message);
+    log(messageOf(error));
     return exit(1);
   }
   const program: Program = await import(
@@ -83,15 +88,18 @@ const serve = async (args: string[]): Promise<void> => {
   if (!daemon) {
     log(`A daemon already answers on port ${httpPort}; leaving it running.`);
     if (tailnet) {
-      log("Run `aseprite-mcp stop` first to restart it with tailnet access.");
+      log(
+        "That daemon may not have tailnet access. Run `aseprite-mcp stop`, then start it again."
+      );
+      return exit(1);
     }
     return exit(0);
   }
   if (tailscale) {
     try {
-      await serveOnTailnet(daemon.port);
+      await serveOnTailnet(httpPort);
     } catch (error) {
-      log((error as Error).message);
+      log(messageOf(error));
       await daemon.close();
       return exit(1);
     }

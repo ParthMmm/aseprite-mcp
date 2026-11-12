@@ -73,7 +73,9 @@ If your machines share a [Tailscale](https://tailscale.com) tailnet, agents on a
 
 2. On the other machine, add that URL to the MCP client as an HTTP server.
 
-By default, only the Tailscale user who owns the machine can connect. To allow other users, set `ASEPRITE_MCP_TAILNET_USERS` to a comma-separated list of logins, such as `alice@example.com,bob@example.com`. The daemon compares each login with the `Tailscale-User-Login` header that `tailscale serve` adds, and refuses all other requests. Requests from tagged devices carry no login, so the daemon refuses them.
+By default, only the Tailscale user who owns the machine can connect. To allow other users, set `ASEPRITE_MCP_TAILNET_USERS` to a comma-separated list of logins, such as `alice@example.com,bob@example.com`. The daemon compares each login with the `Tailscale-User-Login` header that `tailscale serve` adds, and refuses all other requests, including requests without that header.
+
+If Serve is not yet enabled for your tailnet, `tailscale serve` prints a link to enable it. Open the link, then start the daemon again. The daemon stops with an error if `tailscale serve` does not finish within 30 seconds.
 
 Tailnet callers differ from local callers in two ways:
 

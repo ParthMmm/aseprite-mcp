@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { request } from "node:http";
 // Tailnet access: a daemon started with ASEPRITE_MCP_TAILNET_* admits requests that `tailscale serve` forwards
 // for allowed users, and the pure config functions behind `serve --tailscale`.
 import { test, before, after } from "node:test";
 
-import { resolveTailnet, tailnetFromStatus } from "../src/tailnet.ts";
-import { isolatedEnv, serve, waitForHealth } from "./fixtures/daemon-env.ts";
+import {
+  resolveTailnet,
+  tailnetEnvComplete,
+  tailnetFromStatus,
+} from "../src/tailnet.ts";
+import {
+  isolatedEnv,
+  rawRequest,
+  serve,
+  waitForHealth,
+} from "./fixtures/daemon-env.ts";
 
 const TAILNET_HOST = "machine.example-tailnet.ts.net:9124";
 const ALICE = "alice@example.com";
@@ -32,29 +40,12 @@ const viaTailscale = (login?: string): Record<string, string> => ({
   ...(login === undefined ? {} : { "tailscale-user-login": login }),
 });
 
-// Raw request so the test controls the Host header (fetch does not allow overriding it).
 const raw = (
   method: string,
   path: string,
   headers: Record<string, string>,
   body?: unknown
-) => {
-  const { promise, resolve, reject } = Promise.withResolvers<{
-    status: number | undefined;
-    body: string;
-  }>();
-  const req = request(
-    { headers, host: "127.0.0.1", method, path, port: ctx.httpPort },
-    (res) => {
-      let text = "";
-      res.on("data", (d: Buffer) => (text += d));
-      res.on("end", () => resolve({ body: text, status: res.statusCode }));
-    }
-  );
-  req.on("error", reject);
-  req.end(body === undefined ? undefined : JSON.stringify(body));
-  return promise;
-};
+) => rawRequest(ctx.httpPort, method, path, headers, body);
 
 interface Block {
   type: string;
@@ -126,6 +117,33 @@ test("tailnet requests from other users, without a login, or for another host ar
     await health({ ...viaTailscale(ALICE), origin: `https://${TAILNET_HOST}` }),
     200
   );
+});
+
+test("a tailnet MCP call from a foreign Origin is rejected", async () => {
+  const res = await raw(
+    "POST",
+    "/mcp",
+    {
+      ...viaTailscale(ALICE),
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      origin: "https://evil.example",
+    },
+    { id: 1, jsonrpc: "2.0", method: "tools/list" }
+  );
+  assert.equal(res.status, 403);
+});
+
+test("serve with tailnet access fails when an older daemon already holds the port", async () => {
+  const { exited } = serve({
+    ...ctx.env,
+    ASEPRITE_MCP_TAILNET_HOST: TAILNET_HOST,
+    ASEPRITE_MCP_TAILNET_USERS: ALICE,
+  });
+  const { code, stderr } = await exited;
+  assert.equal(code, 1);
+  assert.match(stderr, /aseprite-mcp stop/u);
+  await waitForHealth(ctx.base);
 });
 
 test("a proxied request cannot pass as loopback by sending a loopback Host", async () => {
@@ -208,4 +226,10 @@ test("resolveTailnet lets the environment override detection", () => {
     { host: "box.example-tailnet.ts.net:9200", users: new Set([ALICE]) }
   );
   assert.throws(() => resolveTailnet({ users: ALICE }, null), /both/u);
+});
+
+test("tailnetEnvComplete is true only when the environment sets both the Host and a user", () => {
+  assert.equal(tailnetEnvComplete({ host: TAILNET_HOST, users: ALICE }), true);
+  assert.equal(tailnetEnvComplete({ host: TAILNET_HOST, users: " , " }), false);
+  assert.equal(tailnetEnvComplete({ users: ALICE }), false);
 });

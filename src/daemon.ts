@@ -28,6 +28,7 @@ import {
 import type { BackupSprite } from "./files.ts";
 import { createLink } from "./link.ts";
 import type { Link } from "./link.ts";
+import type { Tailnet } from "./tailnet.ts";
 
 const HOST = "127.0.0.1";
 const MAX_BODY = 16 * 1024 * 1024;
@@ -59,14 +60,6 @@ export interface Runtime {
 export interface Program {
   createRuntime: (options: RuntimeOptions) => Runtime;
   DESCRIPTION: string;
-}
-
-/** Callers that reach the daemon through `tailscale serve`. */
-export interface Tailnet {
-  /** The Host header the proxy forwards, such as `machine.example-tailnet.ts.net:9124`. */
-  host: string;
-  /** Tailscale logins allowed in, such as `alice@example.com`. */
-  users: ReadonlySet<string>;
 }
 
 type Access = "loopback" | "tailnet";
@@ -133,17 +126,14 @@ const classifyRequest = (
   ) {
     return loopbackOrigin(origin) ? "loopback" : null;
   }
-  const login = req.headers["tailscale-user-login"];
-  if (
-    tailnet &&
-    host === tailnet.host &&
-    typeof login === "string" &&
-    tailnet.users.has(login) &&
-    (origin === undefined || origin === `https://${tailnet.host}`)
-  ) {
-    return "tailnet";
+  if (!tailnet || host !== tailnet.host) {
+    return null;
   }
-  return null;
+  const login = req.headers["tailscale-user-login"];
+  const allowedUser = typeof login === "string" && tailnet.users.has(login);
+  const tailnetOrigin =
+    origin === undefined || origin === `https://${tailnet.host}`;
+  return allowedUser && tailnetOrigin ? "tailnet" : null;
 };
 
 const sendJson = (res: ServerResponse, status: number, body: unknown): void => {

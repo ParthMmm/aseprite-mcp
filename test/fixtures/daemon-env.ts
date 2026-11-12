@@ -3,6 +3,7 @@ import type { ChildProcess } from "node:child_process";
 // Shared by the daemon and e2e tests: free ports, an isolated environment and a daemon on them with the fake runtime.
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import { request } from "node:http";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -72,6 +73,31 @@ export const waitForHealth = (base: string, ms = 5000): Promise<Health> => {
     return attempt();
   };
   return attempt();
+};
+
+/** A raw HTTP request to the daemon, so a test controls the Host header (fetch does not allow overriding it). */
+export const rawRequest = (
+  port: number,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: unknown
+): Promise<{ status: number | undefined; body: string }> => {
+  const { promise, resolve, reject } = Promise.withResolvers<{
+    status: number | undefined;
+    body: string;
+  }>();
+  const req = request(
+    { headers, host: "127.0.0.1", method, path, port },
+    (res) => {
+      let text = "";
+      res.on("data", (d: Buffer) => (text += d));
+      res.on("end", () => resolve({ body: text, status: res.statusCode }));
+    }
+  );
+  req.on("error", reject);
+  req.end(body === undefined ? undefined : JSON.stringify(body));
+  return promise;
 };
 
 /** Runs `aseprite-mcp serve`; resolves with the child and a promise of its exit code. */
