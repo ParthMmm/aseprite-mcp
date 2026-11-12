@@ -59,6 +59,31 @@ Other commands:
 | `node bin/aseprite-mcp.ts status` | Show whether the daemon runs and Aseprite is connected. |
 | `node bin/aseprite-mcp.ts stop` | Stop the daemon. |
 
+### Use it from other machines over Tailscale
+
+If your machines share a [Tailscale](https://tailscale.com) tailnet, agents on any of them can connect to the daemon with one URL.
+
+1. On the machine that runs Aseprite, start the daemon with `--tailscale`:
+
+   ```sh
+   node bin/aseprite-mcp.ts serve --tailscale
+   ```
+
+   The daemon runs `tailscale serve --bg --https=9124 http://127.0.0.1:9124` and logs the URL, such as `https://machine.example-tailnet.ts.net:9124/mcp`. The daemon itself still listens on `127.0.0.1` only.
+
+2. On the other machine, add that URL to the MCP client as an HTTP server.
+
+By default, only the Tailscale user who owns the machine can connect. To allow other users, set `ASEPRITE_MCP_TAILNET_USERS` to a comma-separated list of logins, such as `alice@example.com,bob@example.com`. The daemon compares each login with the `Tailscale-User-Login` header that `tailscale serve` adds, and refuses all other requests. Requests from tagged devices carry no login, so the daemon refuses them.
+
+Tailnet callers differ from local callers in two ways:
+
+- Each result includes view images as image blocks, because the caller cannot read file paths on this machine.
+- A tailnet caller cannot stop the daemon.
+
+To stop serving the daemon to the tailnet, run `tailscale serve --https=9124 off`.
+
+If you run `tailscale serve` yourself, start the daemon with plain `serve` and set both `ASEPRITE_MCP_TAILNET_HOST` and `ASEPRITE_MCP_TAILNET_USERS`. `ASEPRITE_MCP_TAILNET_HOST` is the `Host` header the proxy forwards, such as `machine.example-tailnet.ts.net:9124`.
+
 ### Start the daemon at login on macOS
 
 Save this as `~/Library/LaunchAgents/com.parthmmm.aseprite-mcp.plist`. Replace both paths: the first is your `node` or `bun` binary (`which bun`), the second is your clone.
@@ -118,6 +143,8 @@ Set these environment variables for the daemon.
 | `ASEPRITE_MCP_AUTOSAVE_KEEP` | `5` copies per sprite |
 | `ASEPRITE_MCP_AUTOSAVE_DAYS` | `14` |
 | `ASEPRITE_MCP_AUTOSAVE_MB` | `200` |
+| `ASEPRITE_MCP_TAILNET_HOST` | From `tailscale status` with `serve --tailscale`; otherwise no tailnet access |
+| `ASEPRITE_MCP_TAILNET_USERS` | The machine's owner with `serve --tailscale`; otherwise no tailnet access |
 
 ## The program API
 
@@ -208,7 +235,7 @@ return await s.export("slime", { scale: 4, gif: true, columns: 4 });
 
 ## Safety
 
-- The daemon listens on loopback addresses only (`127.0.0.1`).
+- The daemon listens on loopback addresses only (`127.0.0.1`). With tailnet access on, it also accepts requests that `tailscale serve` forwards for the allowed Tailscale users.
 - Aseprite and the daemon pair with a shared token. Each side proves it knows the token with an HMAC-SHA256 exchange, and the extension checks the server too. The token never crosses the connection.
 - A program can read and write files only inside the allowed folders: by default `~/Pictures/aseprite-mcp` and the temporary directories. Set `ASEPRITE_MCP_FILE_DIRS` to change it.
 - Each program runs in a sandboxed interpreter. Defaults: 60 seconds, 64,000 bytes of output, 10,000 tool calls and a 64 MB draft.

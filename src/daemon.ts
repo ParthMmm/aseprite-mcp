@@ -61,8 +61,19 @@ export interface Program {
   DESCRIPTION: string;
 }
 
+/** Callers that reach the daemon through `tailscale serve`. */
+export interface Tailnet {
+  /** The Host header the proxy forwards, such as `machine.example-tailnet.ts.net:9124`. */
+  host: string;
+  /** Tailscale logins allowed in, such as `alice@example.com`. */
+  users: ReadonlySet<string>;
+}
+
+type Access = "loopback" | "tailnet";
+
 export interface DaemonOptions {
   program: Program;
+  tailnet?: Tailnet | null;
   version: string;
   httpPort: number;
   wsPort: number;
@@ -90,13 +101,7 @@ const ignore = (): null => null;
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-// DNS rebinding and cross-site requests: only loopback hosts and origins may talk to the daemon.
-const trustedRequest = (req: IncomingMessage, port: number): boolean => {
-  const { host } = req.headers;
-  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
-    return false;
-  }
-  const { origin } = req.headers;
+const loopbackOrigin = (origin: string | undefined): boolean => {
   if (origin === undefined) {
     return true;
   }
@@ -109,6 +114,36 @@ const trustedRequest = (req: IncomingMessage, port: number): boolean => {
   } catch {
     return false;
   }
+};
+
+// DNS rebinding and cross-site requests: only loopback hosts and origins, or allowed Tailscale users through
+// `tailscale serve`, may talk to the daemon.
+const classifyRequest = (
+  req: IncomingMessage,
+  port: number,
+  tailnet: Tailnet | null
+): Access | null => {
+  const { host, origin } = req.headers;
+  // `tailscale serve` passes the caller's Host header through unchanged, so a proxied request can claim a
+  // loopback Host. The proxy always adds X-Forwarded-For.
+  const proxied = req.headers["x-forwarded-for"] !== undefined;
+  if (
+    !proxied &&
+    (host === `127.0.0.1:${port}` || host === `localhost:${port}`)
+  ) {
+    return loopbackOrigin(origin) ? "loopback" : null;
+  }
+  const login = req.headers["tailscale-user-login"];
+  if (
+    tailnet &&
+    host === tailnet.host &&
+    typeof login === "string" &&
+    tailnet.users.has(login) &&
+    (origin === undefined || origin === `https://${tailnet.host}`)
+  ) {
+    return "tailnet";
+  }
+  return null;
 };
 
 const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
@@ -214,6 +249,7 @@ export const startDaemon = async ({
   wsPort,
   onShutdown,
   log,
+  tailnet = null,
 }: DaemonOptions): Promise<Daemon | null> => {
   const http = createServer();
   http.listen(httpPort, HOST);
@@ -273,9 +309,11 @@ export const startDaemon = async ({
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> => {
-    if (!trustedRequest(req, port)) {
+    const access = classifyRequest(req, port, tailnet);
+    if (!access) {
       sendJson(res, 403, {
-        error: "Only loopback hosts and origins may use aseprite-mcp.",
+        error:
+          "Only loopback callers and allowed Tailscale users may use aseprite-mcp.",
       });
       return;
     }
@@ -292,6 +330,12 @@ export const startDaemon = async ({
       return;
     }
     if (url.pathname === "/shutdown" && req.method === "POST") {
+      if (access !== "loopback") {
+        sendJson(res, 403, {
+          error: "Only loopback callers may stop the daemon.",
+        });
+        return;
+      }
       sendJson(res, 200, { ok: true });
       log?.("Shutting down on request.");
       await close();
@@ -328,7 +372,8 @@ export const startDaemon = async ({
     res.on("close", () => transport.close());
     await mcpServer(
       { description: program.DESCRIPTION, execute, version },
-      url.searchParams.get("images") === "inline"
+      // Tailnet callers run on other machines and cannot open the view paths.
+      access === "tailnet" || url.searchParams.get("images") === "inline"
     ).connect(transport);
     await transport.handleRequest(req, res, body);
   };

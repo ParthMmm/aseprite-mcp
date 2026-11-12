@@ -4,9 +4,14 @@ import { readFileSync } from "node:fs";
 import { env, argv, exit, stderr, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 
-import type { Program } from "../src/daemon.ts";
+import type { Program, Tailnet } from "../src/daemon.ts";
 import { loadToken } from "../src/files.ts";
 import { health, runProxy, shutdown } from "../src/stdio-proxy.ts";
+import {
+  detectTailnet,
+  resolveTailnet,
+  serveOnTailnet,
+} from "../src/tailnet.ts";
 
 const binPath = import.meta.filename;
 const { version } = JSON.parse(
@@ -25,6 +30,9 @@ Usage: aseprite-mcp [command]
 Commands:
   (none)        Run as an MCP stdio server; starts the daemon if none is running.
   serve         Run the daemon in the foreground.
+  serve --tailscale
+                Also serve it to your tailnet with \`tailscale serve\`, open to
+                this machine's owner.
   status        Print the daemon's health as JSON. Exits 1 when no daemon answers.
   stop          Ask the running daemon to shut down.
   token         Print the pairing token for the Aseprite extension.
@@ -35,9 +43,28 @@ Environment:
   ASEPRITE_MCP_HTTP_PORT  daemon HTTP port (default 9124)
   ASEPRITE_MCP_PORT       WebSocket port the extension connects to (default 9123)
   ASEPRITE_MCP_TOKEN      use this token instead of the token file
+  ASEPRITE_MCP_TAILNET_HOST
+                          the Host header tailnet requests carry, such as
+                          machine.example-tailnet.ts.net:9124
+  ASEPRITE_MCP_TAILNET_USERS
+                          comma-separated Tailscale logins allowed in
 `;
 
-const serve = async (): Promise<void> => {
+const serve = async (args: string[]): Promise<void> => {
+  const tailscale = args.includes("--tailscale");
+  let tailnet: Tailnet | null;
+  try {
+    tailnet = resolveTailnet(
+      {
+        host: env.ASEPRITE_MCP_TAILNET_HOST,
+        users: env.ASEPRITE_MCP_TAILNET_USERS,
+      },
+      tailscale ? await detectTailnet(httpPort) : null
+    );
+  } catch (error) {
+    log((error as Error).message);
+    return exit(1);
+  }
   const program: Program = await import(
     env.ASEPRITE_MCP_PROGRAM
       ? pathToFileURL(env.ASEPRITE_MCP_PROGRAM).href
@@ -49,12 +76,30 @@ const serve = async (): Promise<void> => {
     log,
     onShutdown: () => exit(0),
     program,
+    tailnet,
     version,
     wsPort,
   });
   if (!daemon) {
     log(`A daemon already answers on port ${httpPort}; leaving it running.`);
+    if (tailnet) {
+      log("Run `aseprite-mcp stop` first to restart it with tailnet access.");
+    }
     return exit(0);
+  }
+  if (tailscale) {
+    try {
+      await serveOnTailnet(daemon.port);
+    } catch (error) {
+      log((error as Error).message);
+      await daemon.close();
+      return exit(1);
+    }
+  }
+  if (tailnet) {
+    log(
+      `Tailnet: https://${tailnet.host}/mcp for ${[...tailnet.users].join(", ")}`
+    );
   }
   const stop = async (): Promise<void> => {
     try {
@@ -102,7 +147,7 @@ const token = async (rest: string[]): Promise<void> => {
 
 const [command, ...rest] = argv.slice(2);
 const commands: Record<string, (() => Promise<void>) | undefined> = {
-  serve,
+  serve: () => serve(rest),
   status,
   stop: stopDaemon,
   token: () => token(rest),
