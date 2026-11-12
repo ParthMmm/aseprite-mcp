@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `serve --tailscale` serves the daemon to your tailnet through `tailscale serve`, open to the machine's owner. Set `ASEPRITE_MCP_TAILNET_USERS` to allow other users. Tailnet callers get view images inline and cannot stop the daemon.
+
 ## 0.1.0
 
 First release.

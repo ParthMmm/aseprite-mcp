@@ -74,7 +74,7 @@ const ignore = (): null => null;
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const isMissing = (error: unknown): boolean =>
+export const isMissing = (error: unknown): boolean =>
   (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
 
 const writeToken = async (token: string): Promise<void> => {

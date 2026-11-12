@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { request } from "node:http";
 // The daemon as a process (`aseprite-mcp serve`) with the fake runtime, driven over HTTP.
 import { test, before, after } from "node:test";
 
@@ -9,6 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import {
   isolatedEnv,
+  rawRequest,
   serve,
   waitForHealth,
   root,
@@ -44,21 +44,9 @@ const connect = async (query = "") => {
   return client;
 };
 
-// Raw request so the test controls the Host header (fetch does not allow overriding it).
-const rawGet = (path: string, headers: Record<string, string>) => {
-  const { promise, resolve, reject } = Promise.withResolvers<
-    number | undefined
-  >();
-  const req = request(
-    { headers, host: "127.0.0.1", path, port: ctx.httpPort },
-    (res) => {
-      res.resume();
-      res.on("end", () => resolve(res.statusCode));
-    }
-  );
-  req.on("error", reject);
-  req.end();
-  return promise;
+const rawGet = async (path: string, headers: Record<string, string>) => {
+  const { status } = await rawRequest(ctx.httpPort, "GET", path, headers);
+  return status;
 };
 
 test("/health reports version, pid and the extension status", async () => {
