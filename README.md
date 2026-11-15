@@ -125,6 +125,37 @@ macOS App Nap slows apps that sit in the background, and Aseprite then stalls sa
 defaults write org.aseprite.Aseprite NSAppSleepDisabled -bool YES
 ```
 
+### Start the daemon at login on Linux
+
+Save this as `~/.config/systemd/user/aseprite-mcp.service`. Replace both paths: the first is your `node` or `bun` binary (`which bun`), the second is your clone. `%h` is your home directory.
+
+```ini
+[Unit]
+Description=aseprite-mcp daemon
+
+[Service]
+ExecStart=%h/.bun/bin/bun %h/path/to/aseprite-mcp/bin/aseprite-mcp.ts serve
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+Then start it, and let it run while you are logged out:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now aseprite-mcp
+loginctl enable-linger "$USER"
+```
+
+After you update the code, restart it with `systemctl --user restart aseprite-mcp`. Aseprite reconnects by itself. Read the daemon's log with `journalctl --user -u aseprite-mcp`.
+
+The daemon needs a running Aseprite, and Aseprite needs a desktop session. On a machine that runs unattended, turn on automatic login for your desktop, and start Aseprite at login: copy its desktop entry with `cp /usr/share/applications/aseprite.desktop ~/.config/autostart/`.
+
+The first time the extension connects, Aseprite asks whether the script may open a network connection. Answer it once at the desktop and give the script full trust. Aseprite saves the answer in `~/.config/aseprite/aseprite.ini`, so later starts connect without asking.
+
 ### Settings
 
 Set these environment variables for the daemon.
