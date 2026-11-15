@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Programs run on `@opencode/codemode` 2.3.0 with `effect` 4.1.0 (was 2.0.28 with 4.0.1). Programs behave the same.
 - `serve --tailscale` serves the daemon to your tailnet through `tailscale serve`, open to the machine's owner. Set `ASEPRITE_MCP_TAILNET_USERS` to allow other users. Tailnet callers get view images inline and cannot stop the daemon.
 
 ## 0.1.0
