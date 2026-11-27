@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import { test } from "node:test";
 
+import { encodePng } from "../src/codecs.ts";
 import { help } from "../src/help.ts";
 import { createRuntime, DESCRIPTION } from "../src/program.ts";
 import type {
@@ -11,7 +12,6 @@ import type {
   ExecuteResult,
   ExecuteSuccess,
 } from "../src/program.ts";
-import { encodePng } from "../src/render.ts";
 import { createFakeLink, pixel } from "./fake-link.ts";
 import type { FakeLink } from "./fake-link.ts";
 

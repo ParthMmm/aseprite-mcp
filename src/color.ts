@@ -41,9 +41,9 @@ export const formatHex = ([r, g, b, a = 255]: readonly number[]): string =>
   `#${hex(r)}${hex(g)}${hex(b)}${a === 255 ? "" : hex(a)}`;
 
 // Oklab per Björn Ottosson, with sRGB transfer curves.
-const toLinear = (v: number): number =>
+export const toLinear = (v: number): number =>
   v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-const fromLinear = (v: number): number =>
+export const fromLinear = (v: number): number =>
   v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
 
 /** [L 0..1, chroma, hue in degrees 0..360) */

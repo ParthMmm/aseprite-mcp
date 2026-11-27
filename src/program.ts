@@ -8,25 +8,16 @@ import nodePath from "node:path";
 import { Runtime } from "psychoscript";
 import type { Diagnostic } from "psychoscript";
 
-import { messageOf, wholeNumber } from "./check.ts";
-import { loadPalette, parseHex, ramp, savePalette } from "./color.ts";
+import { messageOf } from "./check.ts";
+import { decodePng } from "./codecs.ts";
+import { loadPalette, ramp, savePalette } from "./color.ts";
 import { insideAllowedDir } from "./files.ts";
 import { help } from "./help.ts";
 import { listLibs, mapError, prepare, readLib, saveLib } from "./library.ts";
 import type { MappedError, Prepared } from "./library.ts";
 import type { Link } from "./link.ts";
 import * as R from "./raster.ts";
-import {
-  critiqueSheet,
-  decodePng,
-  encodeGif,
-  encodePng,
-  frameStrip,
-  gridSheet,
-  guardImage,
-  renderView,
-  upscale,
-} from "./render.ts";
+import { buildSpriteExport, renderSpriteView } from "./render.ts";
 import { createSpriteStore } from "./session.ts";
 import type {
   ArtistChange,
@@ -384,27 +375,6 @@ const imageHandle = (run: Run, picture: R.Canvas): ImageHandle => {
   };
 };
 
-const wholeOption = (name: string, value: unknown, fallback: number): number =>
-  value === undefined ? fallback : wholeNumber(`export: ${name}`, value);
-
-/** Frame range of the whole sprite, or of one tag. */
-const exportRange = (
-  draft: SpriteDraft,
-  tag: unknown
-): { from: number; to: number } => {
-  if (tag === undefined) {
-    return { from: 0, to: draft.durations.length - 1 };
-  }
-  const found = draft.tags.find((t) => t.name === tag);
-  if (!found) {
-    const names = draft.tags.map((t) => t.name);
-    throw new Error(
-      `export: no tag '${String(tag)}'. Tags: ${names.join(", ") || "none"}.`
-    );
-  }
-  return found;
-};
-
 // Resolves symlinks, falling back to the parent folder for a file that does not exist yet.
 const realOrParent = async (abs: string): Promise<string> => {
   try {
@@ -486,12 +456,11 @@ export const createRuntime = ({
     const pics = frames.map((f) =>
       r ? R.crop(draft.flatten(f), r) : draft.flatten(f)
     );
-    const cv = pics.length === 1 ? pics[0] : frameStrip(pics);
-    const rgb = o.background === undefined ? undefined : parseHex(o.background);
-    const background = rgb && ([rgb[0], rgb[1], rgb[2]] as const);
-    const out = o.critique
-      ? critiqueSheet(cv, { background, scale: o.scale })
-      : renderView(cv, { background, scale: o.scale });
+    const out = renderSpriteView(pics, {
+      background: o.background,
+      critique: o.critique,
+      scale: o.scale,
+    });
     await mkdir(viewsDir, { recursive: true });
     const safe = draft.name.replaceAll(/[^\w.-]+/gu, "_").slice(0, 40);
     viewSeq += 1;
@@ -516,12 +485,6 @@ export const createRuntime = ({
       );
     }
     const { sheet = true, gif = false } = o;
-    if (!sheet && !gif) {
-      throw new Error(
-        "export: sheet and gif are both false; nothing to write."
-      );
-    }
-    const scale = wholeOption("scale", o.scale, 1);
     const base = nameOrPath.slice(
       0,
       nameOrPath.length - nodePath.extname(nameOrPath).length
@@ -532,59 +495,35 @@ export const createRuntime = ({
       sheet ? pathFor(".png") : null,
       gif ? pathFor(".gif") : null,
     ]);
-    const sheetPaths =
-      jsonPath && pngPath ? { json: jsonPath, png: pngPath } : null;
-    const files: [string, Buffer | string][] = [];
     await draft.commit("program");
-    const { durations, tags } = draft;
-    const { from, to } = exportRange(draft, o.tag);
-    const indices = Array.from({ length: to - from + 1 }, (_, n) => from + n);
-    // Every scaled frame is held at once, so the limit applies to all of them together.
-    guardImage(
-      `${indices.length} frames at ${scale}x`,
-      draft.width * scale,
-      draft.height * scale * indices.length
+    const frames = Array.from({ length: draft.frames() }, (_, f) =>
+      draft.flatten(f)
     );
-    const frames = indices.map((f) => upscale(draft.flatten(f), scale));
-    const [{ width, height }] = frames;
-    const out: ExportResult = { frames: frames.length, height, width };
-    if (sheetPaths) {
-      const { png, json } = sheetPaths;
-      const columns = wholeOption("columns", o.columns, frames.length);
-      const { sheet: cv, cells } = gridSheet(frames, columns);
-      out.sheet = png;
-      out.json = json;
-      const data = {
-        frames: cells.map(([x, y], n) => ({
-          duration: durations[indices[n]],
-          h: height,
-          w: width,
-          x,
-          y,
-        })),
-        image: nodePath.basename(png),
-        scale,
-        size: { h: cv.height, w: cv.width },
-        tags: tags
-          .filter((t) => t.from >= from && t.to <= to)
-          .map((t) => ({
-            direction: t.direction,
-            from: t.from - from,
-            name: t.name,
-            to: t.to - from,
-          })),
-      };
-      files.push(
-        [png, encodePng(cv.width, cv.height, cv.data)],
-        [json, `${JSON.stringify(data, null, 2)}\n`]
-      );
+    const built = buildSpriteExport({
+      columns: o.columns,
+      durations: draft.durations,
+      frames,
+      gif,
+      scale: o.scale,
+      sheet,
+      sheetImageName: pngPath ? nodePath.basename(pngPath) : undefined,
+      tag: o.tag,
+      tags: draft.tags,
+    });
+    const files: [string, Buffer | string][] = [];
+    const out: ExportResult = {
+      frames: built.frames,
+      height: built.height,
+      width: built.width,
+    };
+    if (pngPath && jsonPath && built.sheetPng && built.sheetJson) {
+      out.sheet = pngPath;
+      out.json = jsonPath;
+      files.push([pngPath, built.sheetPng], [jsonPath, built.sheetJson]);
     }
-    if (gifPath) {
-      const delays = indices.map((f) =>
-        Math.max(2, Math.round(durations[f] / 10))
-      );
+    if (gifPath && built.gif) {
       out.gif = gifPath;
-      files.push([gifPath, encodeGif(frames, delays)]);
+      files.push([gifPath, built.gif]);
     }
     await Promise.all(files.map(([abs, body]) => writeFile(abs, body)));
     return out;

@@ -3,8 +3,8 @@
 import { writeFile } from "node:fs/promises";
 import nodePath from "node:path";
 
+import { encodePng } from "../../src/codecs.ts";
 import type { Envelope, RuntimeOptions } from "../../src/daemon.ts";
-import { encodePng } from "../../src/render.ts";
 
 export const DESCRIPTION = "FAKE execute: test runtime";
 
