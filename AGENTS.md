@@ -1,126 +1,82 @@
-# Ultracite Code Standards
+# AGENTS.md
 
-This project uses **Ultracite**, a zero-config preset that enforces strict code quality standards through automated formatting and linting.
+MCP server that lets an AI agent draw pixel art live in Aseprite. The agent sends one JavaScript program per `execute` call. TypeScript on Node 24+ (run directly, no server build), a Lua extension inside Aseprite, Ultracite (oxlint + oxfmt) for lint and format.
 
-## Quick Reference
+## Project map
 
-- **Format code**: `npx ultracite fix`
-- **Check for issues**: `npx ultracite check`
-- **Diagnose setup**: `npx ultracite doctor`
+- `bin/aseprite-mcp.ts` - CLI: `serve`, `token`, `status`, `stop`; no argument runs the stdio MCP proxy
+- `src/daemon.ts` - HTTP MCP server (`/mcp`, `/health`, `/shutdown`), loopback, tailnet and remote auth
+- `src/program.ts` - `psychoscript` sandbox runtime and the `execute` program API
+- `src/help.ts` - `execute` tool description and `help(topic)` texts
+- `src/session.ts` - Sprite Session: drafts, diffs, compare-and-swap commits, conflict merges
+- `src/link.ts`, `src/wire.ts` - WebSocket link to the extension and the binary frame protocol
+- `src/render.ts`, `src/codecs.ts` - views, critique sheets, sprite sheet and GIF export, PNG/GIF codecs
+- `src/raster.ts`, `src/color.ts` - per-pixel ops and OKLCH/hex color math
+- `src/files.ts`, `src/library.ts` - Workspace storage (path sandboxing, tokens, views, backups, palettes) and saved libraries
+- `src/tailnet.ts` - Tailscale Serve and address discovery
+- `extension/` - Aseprite Lua plugin (`plugin.lua` client, `handlers.lua` commands)
+- `test/` - `node:test` suites; `fake-link.ts` is an in-memory Aseprite; `fixtures/` holds the daemon env and a fake runtime
+- `GLOSSARY.md` - domain terms (Sprite, Cel, Sprite Session, Link, View, Workspace, Library)
 
-Oxlint + Oxfmt (the underlying engine) provides robust linting and formatting. Most issues are automatically fixable.
+<important if="you need to run commands to build, test, lint, typecheck, or run the daemon">
 
----
+| Command | What it does |
+| --- | --- |
+| `npm test` | Run all tests (`node --test`) |
+| `npm run typecheck` | `tsc -p .`, type check only |
+| `npm run check` | Ultracite check (`npx ultracite check`) |
+| `npm run fix` | Ultracite safe fixes and formatting (`npx ultracite fix`) |
+| `npx ultracite doctor` | Diagnose the Ultracite setup |
+| `npm run build` | Pack `extension/` into `dist/aseprite-mcp.aseprite-extension` |
+| `npm start` | Start the daemon (`node bin/aseprite-mcp.ts serve`) |
+| `npm run token` | Print the pairing token (`--new` rotates, `--remote` for the HTTP bearer token) |
+| `node bin/aseprite-mcp.ts status` / `stop` | Daemon status / stop |
 
-## Core Principles
+CI runs typecheck, check, and every test except `test/aseprite.test.ts`. Run `npm run fix` after editing; it is not run on commit.
 
-Write code that is **accessible, performant, type-safe, and maintainable**. Focus on clarity and explicit intent over brevity.
+</important>
 
-### Type Safety & Explicitness
+<important if="you are writing or running tests">
 
-- Use explicit types for function parameters and return values when they enhance clarity
-- Prefer `unknown` over `any` when the type is genuinely unknown
-- Use const assertions (`as const`) for immutable values and literal types
-- Leverage TypeScript's type narrowing instead of type assertions
-- Use meaningful variable names instead of magic numbers - extract constants with descriptive names
+- `test/aseprite.test.ts` runs `test/aseprite-handlers.lua` in real Aseprite (`aseprite -b`) and skips when the app is missing. Set `ASEPRITE=/path/to/aseprite` to point to it.
+- Use `test/fake-link.ts` for anything behind the Link instead of a real extension.
+- Daemon and e2e tests use `test/fixtures/daemon-env.ts` (free ports, isolated env) and `ASEPRITE_MCP_PROGRAM=test/fixtures/fake-program.ts`.
+</important>
 
-### Modern JavaScript/TypeScript
+<important if="you are changing the extension version, package version, or the minimum extension the daemon accepts">
 
-- Use arrow functions for callbacks and short functions
-- Prefer `for...of` loops over `.forEach()` and indexed `for` loops
-- Use optional chaining (`?.`) and nullish coalescing (`??`) for safer property access
-- Prefer template literals over string concatenation
-- Use destructuring for object and array assignments
-- Use `const` by default, `let` only when reassignment is needed, never `var`
+`test/versions.test.ts` enforces these. Keep in sync:
 
-### Async & Promises
+- `package.json` and `package-lock.json` version
+- `extension/package.json` version and `VERSION` in `extension/handlers.lua`
+- `MIN_EXTENSION` in `src/link.ts` must not exceed the shipped extension version
+- README mentions the extension version in Development and Architecture
+</important>
 
-- Always `await` promises in async functions - don't forget to use the return value
-- Use `async/await` syntax instead of promise chains for better readability
-- Handle errors appropriately in async code with try-catch blocks
-- Don't use async functions as Promise executors
+<important if="you are changing the wire protocol or the messages between the daemon and the Lua extension">
 
-### React & JSX
+- Bump `PROTOCOL` in both `src/wire.ts` and `extension/plugin.lua`.
+- Pixels cross as full-canvas `Image.bytes` in the sprite's color mode; `src/wire.ts` is the only place that converts to RGBA.
+- New handler features that the daemon depends on need an extension version bump and a version gate (see `src/session.ts`).
+</important>
 
-- Use function components over class components
-- Call hooks at the top level only, never conditionally
-- Specify all dependencies in hook dependency arrays correctly
-- Use the `key` prop for elements in iterables (prefer unique IDs over array indices)
-- Nest children between opening and closing tags instead of passing as props
-- Don't define components inside other components
-- Use semantic HTML and ARIA attributes for accessibility:
-  - Provide meaningful alt text for images
-  - Use proper heading hierarchy
-  - Add labels for form inputs
-  - Include keyboard event handlers alongside mouse events
-  - Use semantic elements (`<button>`, `<nav>`, etc.) instead of divs with roles
+<important if="you are adding or changing globals, handles, or methods in the execute program API">
 
-### Error Handling & Debugging
+- Handles are plain objects of closures, and mutable state lives behind methods: `psychoscript` copies plain fields once at the sandbox boundary (see `src/program.ts`).
+- Update `DESCRIPTION` and the matching topic in `src/help.ts`. Keep the description short (about 1,000 tokens); put detail in `help(topic)`.
+- Update "The program API" in `README.md` and add a `CHANGELOG.md` entry.
+</important>
 
-- Remove `console.log`, `debugger`, and `alert` statements from production code
-- Throw `Error` objects with descriptive messages, not strings or other values
-- Use `try-catch` blocks meaningfully - don't catch errors just to rethrow them
-- Prefer early returns over nested conditionals for error cases
+<important if="you are touching file paths, workspace storage, tokens, or daemon auth">
 
-### Code Organization
+- All host file access goes through the injectable Workspace in `src/files.ts`, which sandboxes paths. Do not read config or env at import time; pass it in.
+- Remote and tailnet callers must not be able to stop the daemon. Compare tokens with `timingSafeEqual`.
+</important>
 
-- Keep functions focused and under reasonable cognitive complexity limits
-- Extract complex conditions into well-named boolean variables
-- Use early returns to reduce nesting
-- Prefer simple conditionals over nested ternary operators
-- Group related code together and separate concerns
+<important if="you are naming new modules, types, or concepts">
+Use the terms in `GLOSSARY.md` and avoid the listed alternatives (for example "Link", not "socket" or "bridge"). Add new domain terms there.
+</important>
 
-### Security
-
-- Add `rel="noopener"` when using `target="_blank"` on links
-- Avoid `dangerouslySetInnerHTML` unless absolutely necessary
-- Don't use `eval()` or assign directly to `document.cookie`
-- Validate and sanitize user input
-
-### Performance
-
-- Avoid spread syntax in accumulators within loops
-- Use top-level regex literals instead of creating them in loops
-- Prefer specific imports over namespace imports
-- Avoid barrel files (index files that re-export everything)
-- Use proper image components (e.g., Next.js `<Image>`) over `<img>` tags
-
-### Framework-Specific Guidance
-
-**Next.js:**
-
-- Use Next.js `<Image>` component for images
-- Use `next/head` or App Router metadata API for head elements
-- Use Server Components for async data fetching instead of async Client Components
-
-**React 19+:**
-
-- Use ref as a prop instead of `React.forwardRef`
-
-**Solid/Svelte/Vue/Qwik:**
-
-- Use `class` and `for` attributes (not `className` or `htmlFor`)
-
----
-
-## Testing
-
-- Write assertions inside `it()` or `test()` blocks
-- Avoid done callbacks in async tests - use async/await instead
-- Don't use `.only` or `.skip` in committed code
-- Keep test suites reasonably flat - avoid excessive `describe` nesting
-
-## When Oxlint + Oxfmt Can't Help
-
-Oxlint + Oxfmt will catch most mechanical issues automatically. Focus your attention on:
-
-1. **Business logic correctness** - Oxlint + Oxfmt can't validate your algorithms
-2. **Meaningful naming** - Use descriptive names for functions, variables, and types
-3. **Architecture decisions** - Component structure, data flow, and API design
-4. **Edge cases** - Handle boundary conditions and error states
-5. **User experience** - Accessibility, performance, and usability considerations
-6. **Documentation** - Add comments for complex logic, but prefer self-documenting code
-
----
-
-Most formatting and common issues are automatically fixed by Oxlint + Oxfmt. Run `npx ultracite fix` before committing to ensure compliance.
+<important if="you are adding TypeScript imports or syntax">
+Import local files with the `.ts` extension, and use only erasable syntax (no `enum`, `namespace`, or parameter properties): Node runs the sources without a build.
+</important>
