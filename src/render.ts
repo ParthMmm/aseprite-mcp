@@ -1,6 +1,6 @@
 // Pixels to and from image files: the PNG encoder and decoder, layer compositing, upscaled views, the critique
 // sheet, sprite sheets and the GIF encoder.
-import { deflateSync, inflateSync } from "node:zlib";
+import { crc32 as zlibCrc32, deflateSync, inflateSync } from "node:zlib";
 
 /** RGBA, row-major */
 export interface Canvas {
@@ -28,32 +28,17 @@ const PNG_SIGNATURE = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
 const MAX_OUTPUT_PIXELS = 4096 * 4096;
-
-const CRC_LUT = new Uint32Array(256);
-for (let n = 0; n < 256; n += 1) {
-  let c = n;
-  for (let bit = 0; bit < 8; bit += 1) {
-    c = c & 1 ? 0xed_b8_83_20 ^ (c >>> 1) : c >>> 1;
-  }
-  CRC_LUT[n] = c >>> 0;
-}
-
-const crc32 = (...parts: Uint8Array[]): number => {
-  let crc = 0xff_ff_ff_ff;
-  for (const part of parts) {
-    for (const byte of part) {
-      crc = CRC_LUT[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-    }
-  }
-  return (crc ^ 0xff_ff_ff_ff) >>> 0;
-};
+const VIEW_DEFLATE_LEVEL = 3;
 
 const pngChunk = (type: string, body: Uint8Array): Buffer => {
-  const out = Buffer.alloc(12 + body.length);
+  const out = Buffer.allocUnsafe(12 + body.length);
   out.writeUInt32BE(body.length, 0);
   out.write(type, 4, "ascii");
   out.set(body, 8);
-  out.writeUInt32BE(crc32(out.subarray(4, 8), body), 8 + body.length);
+  out.writeUInt32BE(
+    zlibCrc32(out.subarray(4, 8 + body.length)),
+    8 + body.length
+  );
   return out;
 };
 
@@ -61,14 +46,17 @@ const pngChunk = (type: string, body: Uint8Array): Buffer => {
 export const encodePng = (
   width: number,
   height: number,
-  rgba: Uint8Array
+  rgba: Uint8Array,
+  level = 6
 ): Buffer => {
   const stride = width * 4;
-  const raw = Buffer.alloc((stride + 1) * height);
+  const raw = Buffer.allocUnsafe((stride + 1) * height);
   for (let y = 0; y < height; y += 1) {
-    raw.set(rgba.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
+    const row = y * (stride + 1);
+    raw[row] = 0;
+    raw.set(rgba.subarray(y * stride, (y + 1) * stride), row + 1);
   }
-  const header = Buffer.alloc(13);
+  const header = Buffer.allocUnsafe(13);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
   // Depth 8, colour type 6 (RGBA), deflate, adaptive filtering, no interlace.
@@ -76,7 +64,7 @@ export const encodePng = (
   return Buffer.concat([
     PNG_SIGNATURE,
     pngChunk("IHDR", header),
-    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IDAT", deflateSync(raw, { level })),
     pngChunk("IEND", Buffer.alloc(0)),
   ]);
 };
@@ -113,8 +101,84 @@ export const composite = (
   return { data, height, width };
 };
 
-const checkerShade = (x: number, y: number, cell: number): number =>
-  (Math.trunc(x / cell) + Math.trunc(y / cell)) & 1 ? 255 : 204;
+const checkerColumns = (width: number, cell: number): Uint8Array => {
+  const cols = new Uint8Array(width);
+  for (let x = 0; x < width; x += 1) {
+    cols[x] = Math.trunc(x / cell) & 1;
+  }
+  return cols;
+};
+
+/** Fills a `size x size` block at `(left, top)` in `out` (stride `rowBytes`) with one RGBA colour. */
+const fillBlock = (
+  out: Uint8Array,
+  rowBytes: number,
+  left: number,
+  top: number,
+  size: number,
+  r: number,
+  g: number,
+  b: number,
+  a: number
+): void => {
+  const start = top * rowBytes + left * 4;
+  const widthBytes = size * 4;
+  for (let o = start; o < start + widthBytes; o += 4) {
+    out[o] = r;
+    out[o + 1] = g;
+    out[o + 2] = b;
+    out[o + 3] = a;
+  }
+  for (let dy = 1; dy < size; dy += 1) {
+    out.copyWithin(start + dy * rowBytes, start, start + widthBytes);
+  }
+};
+
+/** Fills a `size x size` block over a checkerboard using two pre-blended RGB colours (dark=0, light=1). */
+const fillCheckerBlock = (
+  out: Uint8Array,
+  rowBytes: number,
+  cols: Uint8Array,
+  panelX: number,
+  panelY: number,
+  dstLeft: number,
+  dstTop: number,
+  size: number,
+  cell: number,
+  r0: number,
+  g0: number,
+  b0: number,
+  r1: number,
+  g1: number,
+  b1: number
+): void => {
+  const widthBytes = size * 4;
+  let prevCy = -1;
+  let prevRow = 0;
+  for (let dy = 0; dy < size; dy += 1) {
+    const rowStart = (dstTop + dy) * rowBytes + dstLeft * 4;
+    const cy = Math.trunc((panelY + dy) / cell) & 1;
+    if (cy === prevCy) {
+      out.copyWithin(rowStart, prevRow, prevRow + widthBytes);
+      continue;
+    }
+    for (let dx = 0; dx < size; dx += 1) {
+      const o = rowStart + dx * 4;
+      if ((cols[panelX + dx] ^ cy) === 1) {
+        out[o] = r1;
+        out[o + 1] = g1;
+        out[o + 2] = b1;
+      } else {
+        out[o] = r0;
+        out[o + 1] = g0;
+        out[o + 2] = b0;
+      }
+      out[o + 3] = 255;
+    }
+    prevCy = cy;
+    prevRow = rowStart;
+  }
+};
 
 export const guardImage = (
   what: string,
@@ -147,30 +211,72 @@ export const renderView = (
     background,
   }: { scale?: number; checker?: boolean; background?: Backdrop } = {}
 ): Rendered => {
-  const W = cv.width * scale;
-  const H = cv.height * scale;
+  const { width: w, height: h, data } = cv;
+  const W = w * scale;
+  const H = h * scale;
   guardSize(W, H, scale);
   const out = new Uint8Array(W * H * 4);
+  const rowBytes = W * 4;
   const cell = Math.max(2, scale >> 1);
-  for (let y = 0; y < H; y += 1) {
-    const sy = Math.trunc(y / scale);
-    for (let x = 0; x < W; x += 1) {
-      const s = (sy * cv.width + Math.trunc(x / scale)) * 4;
-      const o = (y * W + x) * 4;
-      const a = cv.data[s + 3];
+  const cols = checker && !background ? checkerColumns(W, cell) : null;
+  for (let sy = 0; sy < h; sy += 1) {
+    const y0 = sy * scale;
+    for (let sx = 0; sx < w; sx += 1) {
+      const s = (sy * w + sx) * 4;
+      const r = data[s];
+      const g = data[s + 1];
+      const b = data[s + 2];
+      const a = data[s + 3];
+      const x0 = sx * scale;
       if (!checker || a === 255) {
-        out.set(cv.data.subarray(s, s + 4), o);
-        continue;
+        fillBlock(out, rowBytes, x0, y0, scale, r, g, b, a);
+      } else if (background) {
+        const inv = 255 - a;
+        fillBlock(
+          out,
+          rowBytes,
+          x0,
+          y0,
+          scale,
+          Math.round((r * a + background[0] * inv) / 255),
+          Math.round((g * a + background[1] * inv) / 255),
+          Math.round((b * a + background[2] * inv) / 255),
+          255
+        );
+      } else if (cols) {
+        const inv = 255 - a;
+        const r0 = a === 0 ? 204 : Math.round((r * a + 204 * inv) / 255);
+        const g0 = a === 0 ? 204 : Math.round((g * a + 204 * inv) / 255);
+        const b0 = a === 0 ? 204 : Math.round((b * a + 204 * inv) / 255);
+        const r1 = a === 0 ? 255 : Math.round((r * a + 255 * inv) / 255);
+        const g1 = a === 0 ? 255 : Math.round((g * a + 255 * inv) / 255);
+        const b1 = a === 0 ? 255 : Math.round((b * a + 255 * inv) / 255);
+        fillCheckerBlock(
+          out,
+          rowBytes,
+          cols,
+          x0,
+          y0,
+          x0,
+          y0,
+          scale,
+          cell,
+          r0,
+          g0,
+          b0,
+          r1,
+          g1,
+          b1
+        );
       }
-      const shade = checkerShade(x, y, cell);
-      const bg = background ?? [shade, shade, shade];
-      for (let c = 0; c < 3; c += 1) {
-        out[o + c] = Math.round((cv.data[s + c] * a + bg[c] * (255 - a)) / 255);
-      }
-      out[o + 3] = 255;
     }
   }
-  return { height: H, png: encodePng(W, H, out), scale, width: W };
+  return {
+    height: H,
+    png: encodePng(W, H, out, VIEW_DEFLATE_LEVEL),
+    scale,
+    width: W,
+  };
 };
 
 export const CRITIQUE_PANELS: readonly CritiquePanel[] = [
@@ -193,30 +299,137 @@ const toLinear = (v: number): number =>
 const fromLinear = (v: number): number =>
   v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
 
+const deutanRgb = (r: number, g: number, b: number): Rgb => {
+  const lr = toLinear(r / 255);
+  const lg = toLinear(g / 255);
+  const lb = toLinear(b / 255);
+  const [m0, m1, m2] = DEUTAN;
+  return [
+    255 *
+      fromLinear(
+        Math.min(1, Math.max(0, m0[0] * lr + m0[1] * lg + m0[2] * lb))
+      ),
+    255 *
+      fromLinear(
+        Math.min(1, Math.max(0, m1[0] * lr + m1[1] * lg + m1[2] * lb))
+      ),
+    255 *
+      fromLinear(
+        Math.min(1, Math.max(0, m2[0] * lr + m2[1] * lg + m2[2] * lb))
+      ),
+  ];
+};
+
 const shadePanel = (
   kind: CritiquePanel,
   r: number,
   g: number,
-  b: number
-): number[] => {
+  b: number,
+  cache?: Map<number, Rgb>
+): Rgb => {
   if (kind === "gray") {
     const luma = 0.299 * r + 0.587 * g + 0.114 * b;
     return [luma, luma, luma];
   }
   if (kind === "deutan") {
-    const lin = [r, g, b].map((v) => toLinear(v / 255));
-    return DEUTAN.map(
-      (row) =>
-        255 *
-        fromLinear(
-          Math.min(
-            1,
-            Math.max(0, row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2])
-          )
-        )
-    );
+    const key = (r << 16) | (g << 8) | b;
+    const hit = cache?.get(key);
+    if (hit) {
+      return hit;
+    }
+    const rgb = deutanRgb(r, g, b);
+    cache?.set(key, rgb);
+    return rgb;
   }
   return [r, g, b];
+};
+
+const drawPanel = (
+  out: Uint8Array,
+  rowBytes: number,
+  cv: Canvas,
+  kind: CritiquePanel,
+  s: number,
+  left: number,
+  background?: Backdrop
+): void => {
+  const { width: w, height: h, data } = cv;
+  const cell = Math.max(2, s >> 1);
+  const deutanCache = kind === "deutan" ? new Map<number, Rgb>() : undefined;
+  const ground = background
+    ? shadePanel(kind, background[0], background[1], background[2], deutanCache)
+    : undefined;
+  const cols =
+    kind === "silhouette" || ground ? null : checkerColumns(w * s, cell);
+  for (let sy = 0; sy < h; sy += 1) {
+    const py = sy * s;
+    const dstTop = SHEET_GAP + py;
+    for (let sx = 0; sx < w; sx += 1) {
+      const i = (sy * w + sx) * 4;
+      const a = data[i + 3];
+      const px = sx * s;
+      const dstLeft = left + px;
+      if (kind === "silhouette") {
+        const v = a >= 128 ? 0 : 255;
+        fillBlock(out, rowBytes, dstLeft, dstTop, s, v, v, v, 255);
+        continue;
+      }
+      const [pr, pg, pb] = shadePanel(
+        kind,
+        data[i],
+        data[i + 1],
+        data[i + 2],
+        deutanCache
+      );
+      if (a === 255) {
+        fillBlock(
+          out,
+          rowBytes,
+          dstLeft,
+          dstTop,
+          s,
+          Math.round(pr),
+          Math.round(pg),
+          Math.round(pb),
+          255
+        );
+      } else if (ground) {
+        const cover = a / 255;
+        const inv = 1 - cover;
+        fillBlock(
+          out,
+          rowBytes,
+          dstLeft,
+          dstTop,
+          s,
+          Math.round(pr * cover + ground[0] * inv),
+          Math.round(pg * cover + ground[1] * inv),
+          Math.round(pb * cover + ground[2] * inv),
+          255
+        );
+      } else if (cols) {
+        const cover = a / 255;
+        const inv = 1 - cover;
+        fillCheckerBlock(
+          out,
+          rowBytes,
+          cols,
+          px,
+          py,
+          dstLeft,
+          dstTop,
+          s,
+          cell,
+          a === 0 ? 204 : Math.round(pr * cover + 204 * inv),
+          a === 0 ? 204 : Math.round(pg * cover + 204 * inv),
+          a === 0 ? 204 : Math.round(pb * cover + 204 * inv),
+          a === 0 ? 255 : Math.round(pr * cover + 255 * inv),
+          a === 0 ? 255 : Math.round(pg * cover + 255 * inv),
+          a === 0 ? 255 : Math.round(pb * cover + 255 * inv)
+        );
+      }
+    }
+  }
 };
 
 /**
@@ -238,7 +451,7 @@ export const critiqueSheet = (
       );
     }
   }
-  const { width: w, height: h, data } = cv;
+  const { width: w, height: h } = cv;
   const scales = panels.map((p) => (p === "1x" ? 1 : scale));
   const W = scales.reduce(
     (sum, s) => sum + w * s,
@@ -247,40 +460,30 @@ export const critiqueSheet = (
   const H = h * Math.max(...scales) + 2 * SHEET_GAP;
   guardSize(W, H, scale);
   const out = new Uint8Array(W * H * 4);
-  for (let i = 0; i < out.length; i += 4) {
-    out.set(SHEET_BACKGROUND, i);
+  const rowBytes = W * 4;
+  const [bgR, bgG, bgB, bgA] = SHEET_BACKGROUND;
+  for (let o = 0; o < rowBytes; o += 4) {
+    out[o] = bgR;
+    out[o + 1] = bgG;
+    out[o + 2] = bgB;
+    out[o + 3] = bgA;
+  }
+  for (let y = 1; y < H; y += 1) {
+    out.copyWithin(y * rowBytes, 0, rowBytes);
   }
 
   let left = SHEET_GAP;
   for (const [n, kind] of panels.entries()) {
     const s = scales[n];
-    const cell = Math.max(2, s >> 1);
-    const ground = background && shadePanel(kind, ...background);
-    for (let y = 0; y < h * s; y += 1) {
-      for (let x = 0; x < w * s; x += 1) {
-        const i = (Math.trunc(y / s) * w + Math.trunc(x / s)) * 4;
-        const a = data[i + 3];
-        let rgb: number[];
-        let cover = a / 255;
-        const shade = checkerShade(x, y, cell);
-        let bg = ground ?? [shade, shade, shade];
-        if (kind === "silhouette") {
-          rgb = [0, 0, 0];
-          cover = a >= 128 ? 1 : 0;
-          bg = [255, 255, 255];
-        } else {
-          rgb = shadePanel(kind, data[i], data[i + 1], data[i + 2]);
-        }
-        const o = ((SHEET_GAP + y) * W + left + x) * 4;
-        for (let c = 0; c < 3; c += 1) {
-          out[o + c] = Math.round(rgb[c] * cover + bg[c] * (1 - cover));
-        }
-        out[o + 3] = 255;
-      }
-    }
+    drawPanel(out, rowBytes, cv, kind, s, left, background);
     left += w * s + SHEET_GAP;
   }
-  return { height: H, png: encodePng(W, H, out), scale, width: W };
+  return {
+    height: H,
+    png: encodePng(W, H, out, VIEW_DEFLATE_LEVEL),
+    scale,
+    width: W,
+  };
 };
 
 /** Frames left to right, `gap` transparent columns apart, tops aligned. */
@@ -375,26 +578,72 @@ const paeth = (a: number, b: number, c: number): number => {
   return pb <= pc ? b : c;
 };
 
-const predict = (filter: number, a: number, b: number, c: number): number => {
-  switch (filter) {
-    case 0: {
-      return 0;
+const unfilterSub = (
+  raw: Uint8Array,
+  line: number,
+  px: Uint8Array,
+  o: number,
+  stride: number,
+  bpp: number
+): void => {
+  for (let i = 0; i < bpp; i += 1) {
+    px[o + i] = raw[line + i];
+  }
+  for (let i = bpp; i < stride; i += 1) {
+    px[o + i] = (raw[line + i] + px[o + i - bpp]) & 0xff;
+  }
+};
+
+const unfilterAvg = (
+  raw: Uint8Array,
+  line: number,
+  px: Uint8Array,
+  o: number,
+  prev: number,
+  stride: number,
+  bpp: number,
+  y: number
+): void => {
+  if (y === 0) {
+    for (let i = 0; i < bpp; i += 1) {
+      px[o + i] = raw[line + i];
     }
-    case 1: {
-      return a;
+    for (let i = bpp; i < stride; i += 1) {
+      px[o + i] = (raw[line + i] + (px[o + i - bpp] >> 1)) & 0xff;
     }
-    case 2: {
-      return b;
-    }
-    case 3: {
-      return (a + b) >> 1;
-    }
-    case 4: {
-      return paeth(a, b, c);
-    }
-    default: {
-      throw new Error(`PNG row uses unknown filter type ${filter}.`);
-    }
+    return;
+  }
+  for (let i = 0; i < bpp; i += 1) {
+    px[o + i] = (raw[line + i] + (px[prev + i] >> 1)) & 0xff;
+  }
+  for (let i = bpp; i < stride; i += 1) {
+    px[o + i] =
+      (raw[line + i] + ((px[o + i - bpp] + px[prev + i]) >> 1)) & 0xff;
+  }
+};
+
+const unfilterPaeth = (
+  raw: Uint8Array,
+  line: number,
+  px: Uint8Array,
+  o: number,
+  prev: number,
+  stride: number,
+  bpp: number,
+  y: number
+): void => {
+  if (y === 0) {
+    unfilterSub(raw, line, px, o, stride, bpp);
+    return;
+  }
+  for (let i = 0; i < bpp; i += 1) {
+    px[o + i] = (raw[line + i] + px[prev + i]) & 0xff;
+  }
+  for (let i = bpp; i < stride; i += 1) {
+    px[o + i] =
+      (raw[line + i] +
+        paeth(px[o + i - bpp], px[prev + i], px[prev + i - bpp])) &
+      0xff;
   }
 };
 
@@ -413,11 +662,37 @@ const unfilter = (
     const filter = raw[y * (stride + 1)];
     const line = y * (stride + 1) + 1;
     const o = y * stride;
-    for (let i = 0; i < stride; i += 1) {
-      const a = i >= bpp ? px[o + i - bpp] : 0;
-      const b = y > 0 ? px[o - stride + i] : 0;
-      const c = i >= bpp && y > 0 ? px[o - stride + i - bpp] : 0;
-      px[o + i] = (raw[line + i] + predict(filter, a, b, c)) & 0xff;
+    const prev = o - stride;
+    switch (filter) {
+      case 0: {
+        px.set(raw.subarray(line, line + stride), o);
+        break;
+      }
+      case 1: {
+        unfilterSub(raw, line, px, o, stride, bpp);
+        break;
+      }
+      case 2: {
+        if (y === 0) {
+          px.set(raw.subarray(line, line + stride), o);
+        } else {
+          for (let i = 0; i < stride; i += 1) {
+            px[o + i] = (raw[line + i] + px[prev + i]) & 0xff;
+          }
+        }
+        break;
+      }
+      case 3: {
+        unfilterAvg(raw, line, px, o, prev, stride, bpp, y);
+        break;
+      }
+      case 4: {
+        unfilterPaeth(raw, line, px, o, prev, stride, bpp, y);
+        break;
+      }
+      default: {
+        throw new Error(`PNG row uses unknown filter type ${filter}.`);
+      }
     }
   }
   return px;
@@ -461,6 +736,94 @@ const pngChunks = (buf: Buffer): PngChunks => {
   };
 };
 
+const decodePalettePixels = (
+  px: Uint8Array,
+  width: number,
+  height: number,
+  stride: number,
+  depth: number,
+  plte: Buffer,
+  trns: Buffer
+): Uint8Array => {
+  const data = new Uint8Array(width * height * 4);
+  const mask = (1 << depth) - 1;
+  for (let y = 0; y < height; y += 1) {
+    const row = y * stride;
+    for (let x = 0; x < width; x += 1) {
+      const bit = x * depth;
+      const v = (px[row + (bit >> 3)] >> (8 - depth - (bit & 7))) & mask;
+      if (v * 3 + 2 >= plte.length) {
+        throw new Error(
+          `PNG pixel uses palette index ${v}, outside its palette.`
+        );
+      }
+      const o = (y * width + x) * 4;
+      data[o] = plte[v * 3];
+      data[o + 1] = plte[v * 3 + 1];
+      data[o + 2] = plte[v * 3 + 2];
+      data[o + 3] = v < trns.length ? trns[v] : 255;
+    }
+  }
+  return data;
+};
+
+const decodeGrayPixels = (
+  px: Uint8Array,
+  width: number,
+  height: number,
+  stride: number,
+  hasAlpha: boolean,
+  trns: Buffer
+): Uint8Array => {
+  const data = new Uint8Array(width * height * 4);
+  const channels = hasAlpha ? 2 : 1;
+  const key = trns.length >= 2 ? trns.readUInt16BE(0) : -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const o = (y * width + x) * 4;
+      const i = y * stride + x * channels;
+      const v = px[i];
+      data[o] = v;
+      data[o + 1] = v;
+      data[o + 2] = v;
+      if (hasAlpha) {
+        data[o + 3] = px[i + 1];
+      } else {
+        data[o + 3] = v === key ? 0 : 255;
+      }
+    }
+  }
+  return data;
+};
+
+const decodeRgbPixels = (
+  px: Uint8Array,
+  width: number,
+  height: number,
+  stride: number,
+  trns: Buffer
+): Uint8Array => {
+  const data = new Uint8Array(width * height * 4);
+  const [keyR, keyG, keyB] =
+    trns.length >= 6
+      ? [trns.readUInt16BE(0), trns.readUInt16BE(2), trns.readUInt16BE(4)]
+      : [-1, -1, -1];
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const o = (y * width + x) * 4;
+      const i = y * stride + x * 3;
+      const r = px[i];
+      const g = px[i + 1];
+      const b = px[i + 2];
+      data[o] = r;
+      data[o + 1] = g;
+      data[o + 2] = b;
+      data[o + 3] = r === keyR && g === keyG && b === keyB ? 0 : 255;
+    }
+  }
+  return data;
+};
+
 /**
  * Decodes a PNG to RGBA: colour types 0, 2, 4 and 6 at bit depth 8, and palette PNGs at depth 1, 2, 4 or 8.
  * tRNS transparency is applied. Interlaced and 16-bit PNGs are refused.
@@ -497,63 +860,60 @@ export const decodePng = (file: Uint8Array): Canvas => {
     stride,
     Math.max(1, bits >> 3)
   );
-  const data = new Uint8Array(width * height * 4);
-  const key = trns.length >= 2 ? trns.readUInt16BE(0) : -1;
-  const [keyR, keyG, keyB] =
-    trns.length >= 6
-      ? [trns.readUInt16BE(0), trns.readUInt16BE(2), trns.readUInt16BE(4)]
-      : [-1, -1, -1];
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const o = (y * width + x) * 4;
-      const i = y * stride + x * channels;
-      if (type === 3) {
-        const bit = x * depth;
-        const v =
-          (px[y * stride + (bit >> 3)] >> (8 - depth - (bit & 7))) &
-          ((1 << depth) - 1);
-        if (v * 3 + 2 >= plte.length) {
-          throw new Error(
-            `PNG pixel uses palette index ${v}, outside its palette.`
-          );
-        }
-        data[o] = plte[v * 3];
-        data[o + 1] = plte[v * 3 + 1];
-        data[o + 2] = plte[v * 3 + 2];
-        data[o + 3] = v < trns.length ? trns[v] : 255;
-      } else if (type === 0 || type === 4) {
-        data.fill(px[i], o, o + 3);
-        data[o + 3] = type === 4 ? px[i + 1] : 255 * Number(px[i] !== key);
-      } else {
-        data[o] = px[i];
-        data[o + 1] = px[i + 1];
-        data[o + 2] = px[i + 2];
-        const keyed =
-          px[i] === keyR && px[i + 1] === keyG && px[i + 2] === keyB;
-        data[o + 3] = type === 6 ? px[i + 3] : 255 * Number(!keyed);
-      }
-    }
+  if (type === 6) {
+    return { data: px, height, width };
   }
-  return { data, height, width };
+  if (type === 3) {
+    return {
+      data: decodePalettePixels(px, width, height, stride, depth, plte, trns),
+      height,
+      width,
+    };
+  }
+  if (type === 0 || type === 4) {
+    return {
+      data: decodeGrayPixels(px, width, height, stride, type === 4, trns),
+      height,
+      width,
+    };
+  }
+  return {
+    data: decodeRgbPixels(px, width, height, stride, trns),
+    height,
+    width,
+  };
 };
 
 const MAX_LZW_CODE = 4096;
+const LZW_HT_SIZE = 8192;
+const LZW_HT_MASK = LZW_HT_SIZE - 1;
 
 /** GIF's variable-width LZW, packed least significant bit first. */
 const lzw = (indices: Uint8Array, minCodeSize: number): Uint8Array => {
   const clear = 1 << minCodeSize;
   const end = clear + 1;
-  const bytes: number[] = [];
+  let bytes = new Uint8Array(Math.max(256, indices.length));
+  let byteLen = 0;
   let acc = 0;
   let accBits = 0;
   let size = minCodeSize + 1;
   let next = end + 1;
-  let dict = new Map<number, number>();
+  const keys = new Int32Array(LZW_HT_SIZE).fill(-1);
+  const vals = new Uint16Array(LZW_HT_SIZE);
+  const pushByte = (b: number): void => {
+    if (byteLen === bytes.length) {
+      const grown = new Uint8Array(bytes.length * 2);
+      grown.set(bytes);
+      bytes = grown;
+    }
+    bytes[byteLen] = b;
+    byteLen += 1;
+  };
   const write = (code: number): void => {
     acc |= code << accBits;
     accBits += size;
     while (accBits >= 8) {
-      bytes.push(acc & 0xff);
+      pushByte(acc & 0xff);
       acc >>>= 8;
       accBits -= 8;
     }
@@ -569,20 +929,29 @@ const lzw = (indices: Uint8Array, minCodeSize: number): Uint8Array => {
   let [prefix] = indices;
   for (let i = 1; i < indices.length; i += 1) {
     const k = indices[i];
-    const key = prefix * 256 + k;
-    const hit = dict.get(key);
-    if (hit !== undefined) {
+    const key = (prefix << 8) | k;
+    let slot = ((prefix << 5) ^ k) & LZW_HT_MASK;
+    let hit = -1;
+    while (keys[slot] !== -1) {
+      if (keys[slot] === key) {
+        hit = vals[slot];
+        break;
+      }
+      slot = (slot + 1) & LZW_HT_MASK;
+    }
+    if (hit !== -1) {
       prefix = hit;
       continue;
     }
     output(prefix);
     if (next === MAX_LZW_CODE) {
       write(clear);
-      dict = new Map();
+      keys.fill(-1);
       next = end + 1;
       size = minCodeSize + 1;
     } else {
-      dict.set(key, next);
+      keys[slot] = key;
+      vals[slot] = next;
       next += 1;
     }
     prefix = k;
@@ -590,9 +959,9 @@ const lzw = (indices: Uint8Array, minCodeSize: number): Uint8Array => {
   output(prefix);
   write(end);
   if (accBits > 0) {
-    bytes.push(acc & 0xff);
+    pushByte(acc & 0xff);
   }
-  return Uint8Array.from(bytes);
+  return bytes.subarray(0, byteLen);
 };
 
 const subBlocks = (data: Uint8Array): Buffer => {

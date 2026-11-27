@@ -4,22 +4,16 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import nodePath from "node:path";
 
-import { parse } from "acorn";
-import type { Program } from "acorn";
+import { parseProgram } from "psychoscript";
 
 import { messageOf } from "./check.ts";
 
-const NAME = /^[a-z0-9_-]{1,40}$/u;
+type Program = Extract<
+  ReturnType<typeof parseProgram>,
+  { ok: true }
+>["program"];
 
-/** Parsed exactly as @opencode/codemode parses a program. */
-const parseScript = (code: string): Program =>
-  parse(code, {
-    allowAwaitOutsideFunction: true,
-    allowReturnOutsideFunction: true,
-    ecmaVersion: "latest",
-    locations: true,
-    sourceType: "script",
-  });
+const NAME = /^[a-z0-9_-]{1,40}$/u;
 
 const checkName = (name: unknown): string => {
   if (typeof name !== "string" || !NAME.test(name)) {
@@ -84,17 +78,14 @@ export const saveLib = async (
   if (typeof code !== "string" || !code.trim()) {
     throw new Error(`lib("${safe}", code): code must be a non-empty string.`);
   }
-  let program: Program;
-  try {
-    program = parseScript(code);
-  } catch (error) {
-    const { line } = (error as { loc?: { line: number } }).loc ?? {};
-    const message = messageOf(error).replace(/ \(\d+:\d+\)$/u, "");
+  const parsed = parseProgram(code);
+  if (!parsed.ok) {
+    const line = parsed.error.location?.line;
     throw new Error(
-      `lib("${safe}"): syntax error${line ? ` at line ${line}` : ""}: ${message}. Nothing was saved.`,
-      { cause: error }
+      `lib("${safe}"): syntax error${line ? ` at line ${line}` : ""}: ${parsed.error.message} Nothing was saved.`
     );
   }
+  const { program } = parsed;
   if (program.body.some((s) => s.type === "ReturnStatement")) {
     throw new Error(
       `lib("${safe}"): a library cannot return at the top level; it would end the program that uses it.`
@@ -149,7 +140,8 @@ const resolveOrder = async (
           cause: error,
         });
       }
-      await visitAll(usesOf(parseScript(source)), [...path, name]);
+      const parsed = parseProgram(source);
+      await visitAll(parsed.ok ? usesOf(parsed.program) : [], [...path, name]);
       state.set(name, "done");
       order.push({ name, source });
     }
@@ -159,7 +151,7 @@ const resolveOrder = async (
   return order;
 };
 
-/** The program with its used libraries prepended; a program that does not parse is left for codemode to report. */
+/** The program with its used libraries prepended; a program that does not parse is left for psychoscript to report. */
 export const prepare = async (
   dir: string | null,
   code: string
@@ -168,12 +160,11 @@ export const prepare = async (
   if (!code.includes("use(")) {
     return plain;
   }
-  let roots: string[];
-  try {
-    roots = usesOf(parseScript(code));
-  } catch {
+  const parsed = parseProgram(code);
+  if (!parsed.ok) {
     return plain;
   }
+  const roots = usesOf(parsed.program);
   if (!roots.length) {
     return plain;
   }
@@ -224,7 +215,7 @@ const describe = (at: { line: number; library?: string }, col: string) =>
     ? `(library '${at.library}', line ${at.line}, col ${col})`
     : `(line ${at.line}, col ${col})`;
 
-/** Rewrites "(line L, col C)" and acorn's "(L:C)" in a codemode error to program or library lines. */
+/** Rewrites "(line L, col C)" and acorn's "(L:C)" in a runtime error to program or library lines. */
 export const mapError = (
   p: Prepared,
   error: {

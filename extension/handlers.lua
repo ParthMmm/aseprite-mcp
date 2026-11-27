@@ -1,6 +1,6 @@
 -- The commands the daemon sends. Pixels cross only as Image.bytes strings: full-canvas, in the sprite's mode.
 
-local M = { VERSION = "0.2.0" }
+local M = { VERSION = "0.3.0" }
 
 local STRUCTURE = "\0structure:"
 
@@ -89,11 +89,16 @@ local function blankBytes(sprite)
   return string.rep(fill, sprite.width * sprite.height * BYTES_PER_PIXEL[modeOf(sprite)])
 end
 
-local function canvasBytes(sprite, cel)
+local function canvasBytes(sprite, cel, blank)
   if not cel then return nil end
+  local pos = cel.position
+  local img = cel.image
+  if pos.x == 0 and pos.y == 0 and img.width == sprite.width and img.height == sprite.height then
+    return img.bytes
+  end
   local canvas = Image(sprite.spec)
-  canvas.bytes = blankBytes(sprite)
-  canvas:drawImage(cel.image, cel.position, 255, BlendMode.SRC)
+  canvas.bytes = blank or blankBytes(sprite)
+  canvas:drawImage(img, pos, 255, BlendMode.SRC)
   return canvas.bytes
 end
 
@@ -157,7 +162,7 @@ function handlers.open(args)
 end
 
 function handlers.save(args)
-  local sprite = resolve(nil)
+  local sprite = resolve(args.sprite)
   local path = args.path
   if path == nil then
     if not app.fs.isFile(sprite.filename) then fail("The sprite has never been saved; pass a path.") end
@@ -197,7 +202,10 @@ function handlers.history(args)
   local action = args.action
   local step = (action == "undo" and app.undo) or (action == "redo" and app.redo)
     or fail("history action must be 'undo' or 'redo'.")
-  resolve(nil)
+  local sprite = resolve(args.sprite)
+  if args.sprite ~= nil and (app.activeSprite == nil or not sameSprite(app.activeSprite, sprite)) then
+    app.activeSprite = sprite
+  end
   local steps = args.steps or 1
   for _ = 1, steps do step() end
   return { done = action, steps = steps }
@@ -215,6 +223,7 @@ function handlers.snapshot(args)
   local source = sprite.palettes[1]
   for i = 0, #source - 1 do palette[#palette + 1] = hexColor(source:getColor(i)) end
 
+  local blank = blankBytes(sprite)
   local layers, cels, blobs = {}, {}, {}
   for _, entry in ipairs(layerList(sprite)) do
     local layer = entry.layer
@@ -224,7 +233,7 @@ function handlers.snapshot(args)
     }
     if layer.isImage and not layer.isTilemap then
       for f = 1, #sprite.frames do
-        local bytes = canvasBytes(sprite, layer:cel(f))
+        local bytes = canvasBytes(sprite, layer:cel(f), blank)
         if bytes then
           blobs[#blobs + 1] = bytes
           cels[#cels + 1] = { layer = entry.path, frame = f - 1, blob = #blobs - 1 }
@@ -386,9 +395,13 @@ function handlers.commit(args, blobs)
     -- After the ops, so a canvas.resize sets the size the blobs must have.
     local blank = blankBytes(sprite)
 
+    local layersByPath = {}
+    for _, entry in ipairs(layerList(sprite)) do
+      layersByPath[entry.path] = entry.layer
+    end
     local targets = {}
     for i, w in ipairs(writes) do
-      local layer = needLayer(sprite, w.layer)
+      local layer = layersByPath[w.layer] or structure("layer '" .. tostring(w.layer) .. "' does not exist")
       if not layer.isImage or layer.isTilemap then structure("layer '" .. w.layer .. "' cannot hold pixels") end
       if type(w.frame) ~= "number" or w.frame < 0 or w.frame >= #sprite.frames then
         structure("frame " .. tostring(w.frame) .. " does not exist")
@@ -399,7 +412,7 @@ function handlers.commit(args, blobs)
     local conflicts, current = {}, {}
     for i, w in ipairs(writes) do
       local t = targets[i]
-      local now = canvasBytes(sprite, t.layer:cel(t.frame))
+      local now = canvasBytes(sprite, t.layer:cel(t.frame), blank)
       local base = blobAt(blobs, w.base, #blank)
       if (now or blank) ~= (base or blank) then
         local c = { write = i - 1 }

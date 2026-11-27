@@ -1,6 +1,6 @@
 // The binary frame between the daemon and plugin.lua, and the colour-mode boundary: blobs on the wire are
 // Image.bytes in the sprite's mode; everything past this module sees full-canvas RGBA.
-import { normHex, parseHex } from "./color.ts";
+import { parseHex } from "./color.ts";
 
 export type ColorMode = "rgb" | "indexed" | "gray";
 /** A frame's JSON message; its fields are unchecked extension or daemon data. */
@@ -140,19 +140,40 @@ export const toRgba = (
   const out = new Uint8Array(n * 4);
   if (colorMode === "gray") {
     for (let p = 0; p < n; p += 1) {
-      const v = bytes[p * 2];
       const a = bytes[p * 2 + 1];
       if (a) {
-        out.set([v, v, v, a], p * 4);
+        const v = bytes[p * 2];
+        const o = p * 4;
+        out[o] = v;
+        out[o + 1] = v;
+        out[o + 2] = v;
+        out[o + 3] = a;
       }
     }
     return out;
   }
-  const lut = palette.map((c) => parseHex(c));
+  const lut = new Uint8Array(palette.length * 4);
+  for (let i = 0; i < palette.length; i += 1) {
+    const [r, g, b, a] = parseHex(palette[i]);
+    const o = i * 4;
+    lut[o] = r;
+    lut[o + 1] = g;
+    lut[o + 2] = b;
+    lut[o + 3] = a;
+  }
+  const count = palette.length;
   for (let p = 0; p < n; p += 1) {
     const idx = bytes[p];
-    if (idx !== transparentIndex && idx < lut.length && lut[idx][3]) {
-      out.set(lut[idx], p * 4);
+    if (idx !== transparentIndex && idx < count) {
+      const s = idx * 4;
+      const a = lut[s + 3];
+      if (a) {
+        const o = p * 4;
+        out[o] = lut[s];
+        out[o + 1] = lut[s + 1];
+        out[o + 2] = lut[s + 2];
+        out[o + 3] = a;
+      }
     }
   }
   return out;
@@ -194,53 +215,49 @@ export const fromRgba = (
   if (colorMode === "gray") {
     const bytes = new Uint8Array(n * 2);
     for (let p = 0; p < n; p += 1) {
-      const a = rgba[p * 4 + 3];
+      const o = p * 4;
+      const a = rgba[o + 3];
       if (a) {
-        bytes.set(
-          [luma(rgba[p * 4], rgba[p * 4 + 1], rgba[p * 4 + 2]), a],
-          p * 2
-        );
+        bytes[p * 2] = luma(rgba[o], rgba[o + 1], rgba[o + 2]);
+        bytes[p * 2 + 1] = a;
       }
     }
     return { bytes, missing: [] };
   }
-  const entries = palette
-    .map((c, i) => ({ h: normHex(c), i }))
-    .filter(({ i, h }) => i !== transparentIndex && !h.endsWith("00"));
-  const exact = new Map<string, number>();
-  for (const { i, h } of entries) {
-    if (!exact.has(h)) {
-      exact.set(h, i);
+  const exact = new Map<number, number>();
+  const rgb: PaletteEntry[] = [];
+  for (let i = 0; i < palette.length; i += 1) {
+    if (i === transparentIndex) {
+      continue;
     }
+    const [r, g, b, a] = parseHex(palette[i]);
+    if (a === 0) {
+      continue;
+    }
+    const key = ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
+    if (!exact.has(key)) {
+      exact.set(key, i);
+    }
+    rgb.push([i, r, g, b, a]);
   }
-  const rgb = entries.map(({ i, h }): PaletteEntry => {
-    const [r, g, b, a] = [0, 2, 4, 6].map((k) =>
-      Number.parseInt(h.slice(k, k + 2), 16)
-    );
-    return [i, r, g, b, a];
-  });
   const cache = new Map<number, number>();
   const missing: string[] = [];
   const bytes = new Uint8Array(n).fill(transparentIndex);
   for (let p = 0; p < n; p += 1) {
     const o = p * 4;
-    if (rgba[o + 3] === 0) {
+    const a = rgba[o + 3];
+    if (a === 0) {
       continue;
     }
     const key =
-      ((rgba[o] << 24) |
-        (rgba[o + 1] << 16) |
-        (rgba[o + 2] << 8) |
-        rgba[o + 3]) >>>
-      0;
+      ((rgba[o] << 24) | (rgba[o + 1] << 16) | (rgba[o + 2] << 8) | a) >>> 0;
     let idx = cache.get(key);
     if (idx === undefined) {
-      const h = key.toString(16).padStart(8, "0");
-      idx = exact.get(h);
+      idx = exact.get(key);
       if (idx === undefined) {
-        missing.push(`#${h}`);
+        missing.push(`#${key.toString(16).padStart(8, "0")}`);
         idx =
-          nearest(rgb, rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]) ??
+          nearest(rgb, rgba[o], rgba[o + 1], rgba[o + 2], a) ??
           transparentIndex;
       }
       cache.set(key, idx);

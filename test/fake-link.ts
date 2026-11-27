@@ -310,12 +310,14 @@ export const createFakeLink = (): FakeLink => {
     },
     history({
       action,
+      sprite,
       steps = 1,
     }: {
       action: "undo" | "redo";
+      sprite?: number | string;
       steps?: number;
     }): Reply {
-      const entry = need();
+      const entry = need(sprite);
       for (let i = 0; i < steps; i += 1) {
         const [from, to] =
           action === "undo"
@@ -376,8 +378,8 @@ export const createFakeLink = (): FakeLink => {
     open({ path }: { path: string }): Reply {
       throw new Error(`File not found: ${path}`);
     },
-    save({ path }: { path?: string }): Reply {
-      const { state } = need();
+    save({ path, sprite }: { path?: string; sprite?: number | string }): Reply {
+      const { state } = need(sprite);
       const saved = path ?? state.path;
       if (!saved) {
         throw new Error("Sprite has no file name yet - please pass a path.");
@@ -477,7 +479,7 @@ export const createFakeLink = (): FakeLink => {
     status: (): LinkStatus => ({
       connected: true,
       error: null,
-      extension: "0.2.0",
+      extension: "0.3.0",
       port: 9123,
     }),
   };

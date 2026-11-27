@@ -44,9 +44,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@opencode/codemode": "2.3.0",
-    "acorn": "8.15.0",
-    "effect": "4.1.0",
+    "psychoscript": "0.3.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
@@ -58,6 +56,6 @@
     "ultracite": "^8.0.0"
   },
   "engines": {
-    "node": ">=22.18"
+    "node": ">=24"
   }
 }

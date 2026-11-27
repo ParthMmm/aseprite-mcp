@@ -54,7 +54,10 @@ export interface RuntimeOptions {
 }
 
 export interface Runtime {
-  execute: (code: string) => Promise<Envelope>;
+  execute: (
+    code: string,
+    options?: { signal?: AbortSignal }
+  ) => Promise<Envelope>;
 }
 
 export interface Program {
@@ -86,7 +89,10 @@ type Content =
 interface ServerSetup {
   version: string;
   description: string;
-  execute: (code: string) => Promise<Envelope>;
+  execute: (
+    code: string,
+    options?: { signal?: AbortSignal }
+  ) => Promise<Envelope>;
 }
 
 const ignore = (): null => null;
@@ -208,26 +214,29 @@ const mcpServer = (
       },
     ],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-    if (params.name !== "execute") {
-      throw new McpError(
-        ErrorCode.InvalidParams,
-        `Unknown tool: ${params.name}`
-      );
+  server.setRequestHandler(
+    CallToolRequestSchema,
+    async ({ params }, { signal }) => {
+      if (params.name !== "execute") {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Unknown tool: ${params.name}`
+        );
+      }
+      const code = params.arguments?.code;
+      if (typeof code !== "string") {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "execute needs { code: string }."
+        );
+      }
+      const envelope = await execute(code, { signal });
+      return {
+        content: await toContent(envelope, inline),
+        isError: !envelope.ok,
+      };
     }
-    const code = params.arguments?.code;
-    if (typeof code !== "string") {
-      throw new McpError(
-        ErrorCode.InvalidParams,
-        "execute needs { code: string }."
-      );
-    }
-    const envelope = await execute(code);
-    return {
-      content: await toContent(envelope, inline),
-      isError: !envelope.ok,
-    };
-  });
+  );
   return server;
 };
 
@@ -274,8 +283,11 @@ export const startDaemon = async ({
       spritesDir: SPRITES_DIR,
       viewsDir: VIEWS_DIR,
     });
-    const execute = async (code: string): Promise<Envelope> => {
-      const envelope = await runtime.execute(code);
+    const execute = async (
+      code: string,
+      options?: { signal?: AbortSignal }
+    ): Promise<Envelope> => {
+      const envelope = await runtime.execute(code, options);
       backups.schedule(envelope.commit ?? []);
       if (envelope.images?.length) {
         Promise.allSettled([pruneViews()]);
