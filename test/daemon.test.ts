@@ -1,24 +1,39 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-// The daemon as a process (`aseprite-mcp serve`) with the fake runtime, driven over HTTP.
-import { test, before, after } from "node:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import nodePath from "node:path";
+// The daemon HTTP/MCP surface tested in-process with an injected Workspace and Link adapter.
+import { after, before, test } from "node:test";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import {
-  isolatedEnv,
-  rawRequest,
-  serve,
-  waitForHealth,
-  root,
-} from "./fixtures/daemon-env.ts";
+import { startDaemon } from "../src/daemon.ts";
+import type { Daemon } from "../src/daemon.ts";
+import { createWorkspace } from "../src/files.ts";
+import type { Link } from "../src/link.ts";
+import { rawRequest, root, waitForHealth } from "./fixtures/daemon-env.ts";
+import * as fakeProgram from "./fixtures/fake-program.ts";
 
 const VERSION = JSON.parse(
   readFileSync(`${root}/package.json`, "utf-8")
 ).version;
-let ctx: Awaited<ReturnType<typeof isolatedEnv>>;
-let daemon: ReturnType<typeof serve>;
+
+const disconnectedLink = (): Link => ({
+  request: () => Promise.reject(new Error("not connected")),
+  status: () => ({
+    connected: false,
+    error: null,
+    extension: null,
+    port: 0,
+  }),
+});
+
+let dir: string;
+let viewsDir: string;
+let daemon: Daemon;
+let base: string;
+let shutdownCalled = false;
 
 interface Block {
   type: string;
@@ -26,38 +41,66 @@ interface Block {
   data?: string;
   mimeType?: string;
 }
-// The SDK types a tool result as unknown content; this suite always gets an array of blocks.
 const blocks = (res: unknown) => (res as { content: Block[] }).content;
 
 before(async () => {
-  ctx = await isolatedEnv();
-  daemon = serve(ctx.env);
-  await waitForHealth(ctx.base);
+  dir = mkdtempSync(nodePath.join(tmpdir(), "mcp-daemon-"));
+  viewsDir = nodePath.join(dir, "views");
+  const workspace = createWorkspace({
+    allowedDirs: [dir],
+    autosaveDir: null,
+    libDir: null,
+    palettesFile: nodePath.join(dir, "palettes.json"),
+    spritesDir: dir,
+    tokenEnv: "t".repeat(48),
+    tokenFile: nodePath.join(dir, "token"),
+    viewsDir,
+  });
+  const started = await startDaemon({
+    httpPort: 0,
+    link: disconnectedLink(),
+    onShutdown: () => {
+      shutdownCalled = true;
+    },
+    program: fakeProgram,
+    version: VERSION,
+    workspace,
+    wsPort: 0,
+  });
+  assert.ok(started);
+  daemon = started;
+  base = `http://127.0.0.1:${daemon.port}`;
 });
-after(() => ctx.cleanup());
+
+after(async () => {
+  if (!shutdownCalled) {
+    await daemon.close().catch(() => null);
+  }
+  rmSync(dir, { force: true, recursive: true });
+});
 
 const connect = async (query = "") => {
   const client = new Client({ name: "daemon-test", version: "0" });
   await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${ctx.base}/mcp${query}`))
+    new StreamableHTTPClientTransport(new URL(`${base}/mcp${query}`))
   );
   return client;
 };
 
 const rawGet = async (path: string, headers: Record<string, string>) => {
-  const { status } = await rawRequest(ctx.httpPort, "GET", path, headers);
+  const { status } = await rawRequest(daemon.port, "GET", path, headers);
   return status;
 };
 
 test("/health reports version, pid and the extension status", async () => {
-  const h = await waitForHealth(ctx.base);
+  const h = await waitForHealth(base);
   assert.equal(h.version, VERSION);
-  assert.equal(h.pid, daemon.child.pid);
+  assert.equal(h.pid, process.pid);
   assert.deepEqual(h.extension, {
     connected: false,
     error: null,
     extension: null,
-    port: Number(ctx.env.ASEPRITE_MCP_PORT),
+    port: 0,
   });
 });
 
@@ -99,7 +142,7 @@ test("execute returns the envelope as one JSON text block, image paths without i
       value: { code: "view", connected: false },
     }
   );
-  assert.ok(envelope.images[0].startsWith(ctx.env.ASEPRITE_MCP_VIEWS_DIR));
+  assert.ok(envelope.images[0].startsWith(viewsDir));
   await client.close();
 });
 
@@ -144,16 +187,22 @@ test("?images=inline adds one PNG image block per view", async () => {
   await client.close();
 });
 
-test("a second daemon on the same port exits 0 and the first keeps serving", async () => {
-  const second = serve(ctx.env);
-  const { code } = await second.exited;
-  assert.equal(code, 0);
-  const { pid } = await waitForHealth(ctx.base);
-  assert.equal(pid, daemon.child.pid);
+test("a second daemon on the same port returns null and the first keeps serving", async () => {
+  const second = await startDaemon({
+    httpPort: daemon.port,
+    link: disconnectedLink(),
+    program: fakeProgram,
+    version: VERSION,
+    workspace: createWorkspace({ autosaveDir: null, viewsDir }),
+    wsPort: 0,
+  });
+  assert.equal(second, null);
+  const { pid } = await waitForHealth(base);
+  assert.equal(pid, process.pid);
 });
 
 test("foreign Host headers and non-loopback Origins are rejected", async () => {
-  const port = ctx.httpPort;
+  const { port } = daemon;
   assert.equal(await rawGet("/health", { host: `127.0.0.1:${port}` }), 200);
   assert.equal(
     await rawGet("/health", {
@@ -173,11 +222,10 @@ test("foreign Host headers and non-loopback Origins are rejected", async () => {
   assert.equal(await rawGet("/health", { host: `127.0.0.1:${port + 1}` }), 403);
 });
 
-test("POST /shutdown stops the daemon with exit code 0", async () => {
-  const res = await fetch(`${ctx.base}/shutdown`, { method: "POST" });
+test("POST /shutdown stops the daemon cleanly", async () => {
+  const res = await fetch(`${base}/shutdown`, { method: "POST" });
   assert.equal(res.status, 200);
-  const { code } = await daemon.exited;
-  assert.equal(code, 0);
-  const down = await fetch(`${ctx.base}/health`).catch(() => null);
+  assert.equal(shutdownCalled, true);
+  const down = await fetch(`${base}/health`).catch(() => null);
   assert.equal(down, null);
 });

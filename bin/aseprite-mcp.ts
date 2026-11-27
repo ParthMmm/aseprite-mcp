@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { messageOf } from "../src/check.ts";
 import type { Program } from "../src/daemon.ts";
-import { loadToken } from "../src/files.ts";
+import { createWorkspace } from "../src/files.ts";
 import { health, runProxy, shutdown } from "../src/stdio-proxy.ts";
 import {
   detectTailnet,
@@ -83,6 +83,7 @@ const serve = async (args: string[]): Promise<void> => {
     program,
     tailnet,
     version,
+    workspace: createWorkspace(),
     wsPort,
   });
   if (!daemon) {
@@ -145,7 +146,7 @@ const stopDaemon = async (): Promise<void> => {
 
 const token = async (rest: string[]): Promise<void> => {
   const renew = rest.includes("--new");
-  stdout.write(`${await loadToken({ renew })}\n`);
+  stdout.write(`${await createWorkspace().loadToken({ renew })}\n`);
   if (renew) {
     log(
       "New token saved. Paste it into the Aseprite MCP window, and run `aseprite-mcp stop` so the daemon picks it up."

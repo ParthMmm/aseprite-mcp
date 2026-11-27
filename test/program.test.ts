@@ -5,6 +5,7 @@ import nodePath from "node:path";
 import { test } from "node:test";
 
 import { encodePng } from "../src/codecs.ts";
+import { createWorkspace } from "../src/files.ts";
 import { help } from "../src/help.ts";
 import { createRuntime, DESCRIPTION } from "../src/program.ts";
 import type {
@@ -28,13 +29,15 @@ const fail = (r: ExecuteResult): ExecuteFailure => {
 const setup = async () => {
   const dir = await mkdtemp(nodePath.join(tmpdir(), "aseprite-mcp-program-"));
   const link = createFakeLink();
-  const runtime = createRuntime({
+  const workspace = createWorkspace({
     allowedDirs: [dir],
+    autosaveDir: null,
     libDir: nodePath.join(dir, "lib"),
-    link,
     palettesFile: nodePath.join(dir, "palettes.json"),
+    spritesDir: null,
     viewsDir: nodePath.join(dir, "views"),
   });
+  const runtime = createRuntime({ link, workspace });
   return {
     dir,
     link,

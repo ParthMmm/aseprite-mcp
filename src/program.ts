@@ -1,8 +1,7 @@
 // The code-mode runtime: one execute() runs one agent program against a SpriteSession, then commits what is
 // left as one undo step per sprite. Globals: sprite, sprites, image, ramp, palette, lib, use, help. Handles are plain objects of
 // closures; mutable state is behind methods because psychoscript copies plain fields once at the boundary.
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import nodePath from "node:path";
 
 import { Runtime } from "psychoscript";
@@ -10,8 +9,8 @@ import type { Diagnostic } from "psychoscript";
 
 import { messageOf } from "./check.ts";
 import { decodePng } from "./codecs.ts";
-import { loadPalette, ramp, savePalette } from "./color.ts";
-import { insideAllowedDir } from "./files.ts";
+import { ramp } from "./color.ts";
+import type { Workspace } from "./files.ts";
 import { help } from "./help.ts";
 import { listLibs, mapError, prepare, readLib, saveLib } from "./library.ts";
 import type { MappedError, Prepared } from "./library.ts";
@@ -42,13 +41,7 @@ export interface Limits {
 
 export interface RuntimeOptions {
   link: Link;
-  viewsDir: string;
-  palettesFile: string;
-  /** Where bare names such as "slime" are saved and opened; null disables bare names. */
-  spritesDir?: string | null;
-  /** Where lib() saves helper code; null turns lib() and use() off. */
-  libDir?: string | null;
-  allowedDirs?: string[];
+  workspace: Workspace;
   limits?: Partial<Limits>;
 }
 
@@ -375,24 +368,9 @@ const imageHandle = (run: Run, picture: R.Canvas): ImageHandle => {
   };
 };
 
-// Resolves symlinks, falling back to the parent folder for a file that does not exist yet.
-const realOrParent = async (abs: string): Promise<string> => {
-  try {
-    return await realpath(abs);
-  } catch {
-    const parent = nodePath.dirname(abs);
-    const dir = await realpath(parent).catch(() => parent);
-    return nodePath.join(dir, nodePath.basename(abs));
-  }
-};
-
 export const createRuntime = ({
   link,
-  viewsDir,
-  palettesFile,
-  spritesDir = null,
-  libDir = null,
-  allowedDirs = [],
+  workspace,
   limits = {},
 }: RuntimeOptions): {
   execute: (
@@ -402,38 +380,6 @@ export const createRuntime = ({
 } => {
   const lim: Limits = { ...DEFAULT_LIMITS, ...limits };
   const store = createSpriteStore({ draftBytes: lim.draftBytes, link });
-  let viewSeq = 0;
-
-  // Symlinks are resolved first, so a link inside an allowed folder cannot reach outside it.
-  const allowedPath = async (
-    p: unknown,
-    defaultExt = ".aseprite"
-  ): Promise<string> => {
-    if (typeof p !== "string" || !p) {
-      throw new Error("Pass a file path as a string.");
-    }
-    let target = p;
-    if (spritesDir && /^[^/\\~]+$/u.test(target)) {
-      await mkdir(spritesDir, { recursive: true });
-      target = nodePath.join(
-        spritesDir,
-        nodePath.extname(target) ? target : `${target}${defaultExt}`
-      );
-    }
-    if (!nodePath.isAbsolute(target) && !target.startsWith("~")) {
-      throw new Error(
-        `'${target}' is relative; pass a name such as "slime" or an absolute path.`
-      );
-    }
-    const abs = nodePath.resolve(target.replace(/^~(?=\/|$)/u, homedir()));
-    const real = await realOrParent(abs);
-    if (!(await insideAllowedDir(real, allowedDirs))) {
-      throw new Error(
-        `'${abs}' is outside the allowed folders: ${allowedDirs.join(", ") || "(none configured)"}.`
-      );
-    }
-    return real;
-  };
 
   const view = async (
     run: Run,
@@ -461,14 +407,7 @@ export const createRuntime = ({
       critique: o.critique,
       scale: o.scale,
     });
-    await mkdir(viewsDir, { recursive: true });
-    const safe = draft.name.replaceAll(/[^\w.-]+/gu, "_").slice(0, 40);
-    viewSeq += 1;
-    const path = nodePath.join(
-      viewsDir,
-      `${Date.now()}-${process.pid}-${viewSeq}-${safe}.png`
-    );
-    await writeFile(path, out.png);
+    const path = await workspace.saveView(draft.name, out.png);
     run.images.push(path);
     return { height: out.height, path, width: out.width };
   };
@@ -489,7 +428,7 @@ export const createRuntime = ({
       0,
       nameOrPath.length - nodePath.extname(nameOrPath).length
     );
-    const pathFor = (ext: string) => allowedPath(`${base}${ext}`);
+    const pathFor = (ext: string) => workspace.resolvePath(`${base}${ext}`);
     const [jsonPath, pngPath, gifPath] = await Promise.all([
       sheet ? pathFor(".json") : null,
       sheet ? pathFor(".png") : null,
@@ -567,7 +506,8 @@ export const createRuntime = ({
         return fresh;
       },
       save: async (path) => {
-        const abs = path === undefined ? undefined : await allowedPath(path);
+        const abs =
+          path === undefined ? undefined : await workspace.resolvePath(path);
         return draft.save(abs);
       },
       selection: () => draft.selection,
@@ -584,16 +524,16 @@ export const createRuntime = ({
   };
 
   const libs = (): string => {
-    if (libDir === null) {
+    if (workspace.libDir === null) {
       throw new Error("lib: saved libraries are turned off in this daemon.");
     }
-    return libDir;
+    return workspace.libDir;
   };
 
   const globals = (run: Run) => ({
     help: (topic?: unknown) => help(topic),
     async image(path: unknown): Promise<ImageHandle> {
-      const abs = await allowedPath(path, ".png");
+      const abs = await workspace.resolvePath(path, ".png");
       try {
         return imageHandle(run, decodePng(await readFile(abs)));
       } catch (error) {
@@ -612,13 +552,13 @@ export const createRuntime = ({
     },
     palette: (name: string, colors?: Record<string, string>) =>
       colors === undefined
-        ? loadPalette(palettesFile, name)
-        : savePalette(palettesFile, name, colors),
+        ? workspace.loadPalette(name)
+        : workspace.savePalette(name, colors),
     ramp: (base: string, keys: string, o?: { hueShift?: number }) =>
       ramp(base, keys, o),
     async sprite(o: SpriteOptions = {}): Promise<SpriteHandle> {
       const openPath =
-        o.open === undefined ? undefined : await allowedPath(o.open);
+        o.open === undefined ? undefined : await workspace.resolvePath(o.open);
       const draft = await run.session.open({
         colorMode: o.colorMode,
         id: o.id,
@@ -660,7 +600,7 @@ export const createRuntime = ({
     const done = <E extends object>(e: E) => ({ ...e, ms: Date.now() - t0 });
     let prepared: Prepared;
     try {
-      prepared = await prepare(libDir, code);
+      prepared = await prepare(workspace.libDir, code);
     } catch (error) {
       return done({
         commit: [],
