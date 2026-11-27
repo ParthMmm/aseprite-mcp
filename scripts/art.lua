@@ -641,9 +641,10 @@ do
     { 120, 0, 40, "1", "8" },
   })
 
-  for t = 0, N - 1 do
+  -- One frame of the scene. Without bg it draws on a transparent image.
+  local function frame(t, withBg)
     local img = Image(W, H, ColorMode.RGB)
-    img:drawImage(bg, Point(0, 0))
+    if withBg then img:drawImage(bg, Point(0, 0)) end
     stars(img, 70, t, 11)
 
     -- A sleepy moon in the corner, snoring.
@@ -750,8 +751,32 @@ do
       end
     end
 
-    spr:newCel(spr.layers[1], t + 1, img, Point(0, 0))
+    return img
+  end
+
+  for t = 0, N - 1 do
+    spr:newCel(spr.layers[1], t + 1, frame(t, true), Point(0, 0))
     spr.frames[t + 1].duration = 0.09
   end
   save(spr, "banner", { 1, 4 })
+
+  -- Social preview card, 2:1, for GitHub's repository settings.
+  local CW, CH = 320, 160
+  local card = Sprite(CW, CH, ColorMode.RGB)
+  local cimg = Image(CW, CH, ColorMode.RGB)
+  nebula(cimg, {
+    { 40, 20, 110, "8", "8" },
+    { 250, 160, 150, "1", "8" },
+    { 170, 0, 70, "1", "8" },
+    { 0, 150, 60, "1", "8" },
+  })
+  stars(cimg, 120, 0, 29)
+  cimg:drawImage(frame(0, false), Point(40, 44))
+  -- Rune borders above and below.
+  for i = 0, 59 do
+    rune(cimg, 10 + i * 5, 14, hash(i, 9) % #runes + 1, (i % 7 == 0) and "5" or "7")
+    rune(cimg, 10 + i * 5, CH - 19, hash(i, 13) % #runes + 1, (i % 5 == 0) and "b" or "7")
+  end
+  card.cels[1].image = cimg
+  save(card, "social", { 4 })
 end
