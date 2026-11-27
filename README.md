@@ -12,7 +12,7 @@ Measured on an Apple Silicon Mac with Aseprite 1.3.18: a program that draws a 48
 
 ## Install
 
-Requires Aseprite and Node.js 22.18 or later (it runs the TypeScript sources directly). [Bun](https://bun.sh/) also runs the daemon, about 30% faster. The tests need Node.
+Requires Aseprite and Node.js 24 or later (it runs the TypeScript sources directly). [Bun](https://bun.sh/) also runs the daemon, about 30% faster. The tests need Node.
 
 1. Clone the repository and build the extension.
 
@@ -233,14 +233,14 @@ return await s.export("slime", { scale: 4, gif: true, columns: 4 });
 - `slime.gif` loops and keeps the frame durations. It has one transparent color and at most 255 other colors.
 - `tag: "idle"` exports only that tag's frames. `sheet: false` writes only the GIF.
 
-`image(path)` loads a PNG, such as a reference drawing, as pixels. It returns `{ image, width, height }` with `read(opts)`, `colors(max)` and `downscale(factor)`. `downscale(4)` turns art drawn at 4x back into one pixel per block. To paste it into a cel, pass its id: `c.copy({ image: ref.image }, { x: 8, y: 8 })`. The decoder reads 8-bit PNGs and palette PNGs; it refuses interlaced and 16-bit files.
+`image(path)` loads a PNG, such as a reference drawing, as pixels. It returns `{ image, width, height }` with `read(opts)`, `colors(max)` and `downscale(factor)`. `downscale(4)` turns art drawn at 4x back into one pixel per block. To paste it into a cel, pass the handle (or `{ image: ref.image }`): `c.copy(ref, { x: 8, y: 8 })`. The decoder reads 8-bit PNGs and palette PNGs; it refuses interlaced and 16-bit files.
 
 ## Safety
 
 - The daemon listens on loopback addresses only (`127.0.0.1`). With tailnet access on, it also accepts requests that `tailscale serve` forwards for the allowed Tailscale users.
 - Aseprite and the daemon pair with a shared token. Each side proves it knows the token with an HMAC-SHA256 exchange, and the extension checks the server too. The token never crosses the connection.
 - A program can read and write files only inside the allowed folders: by default `~/Pictures/aseprite-mcp` and the temporary directories. Set `ASEPRITE_MCP_FILE_DIRS` to change it.
-- Each program runs in a sandboxed interpreter. Defaults: 60 seconds, 64,000 bytes of output, 10,000 tool calls and a 64 MB draft.
+- Each program runs in a sandboxed interpreter (`psychoscript`). Defaults: 60 seconds, 64,000 bytes of output and a 64 MB draft.
 - The daemon saves backup copies after each commit and removes old ones by count, age and size.
 
 See [DISCLAIMER.md](DISCLAIMER.md).

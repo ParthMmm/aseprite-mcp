@@ -701,7 +701,10 @@ export const merge3 = (
     }
     const src = oursChanged && !theirsChanged ? ours : theirs;
     if (src) {
-      merged.set(src.subarray(i, i + 4), i);
+      merged[i] = src[i];
+      merged[i + 1] = src[i + 1];
+      merged[i + 2] = src[i + 2];
+      merged[i + 3] = src[i + 3];
     }
   }
   return { kept, lost, merged };

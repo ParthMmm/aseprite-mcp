@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Programs run on `@opencode/codemode` 2.3.0 with `effect` 4.1.0 (was 2.0.28 with 4.0.1). Programs behave the same.
+- Programs run directly on `psychoscript` 0.3.0 (dropping `@opencode/codemode` and `effect`), with Node.js 24+ required. Programs can use ES classes, pass cel and image handles directly to `copy()`, and cancel when the caller aborts.
+- Faster views, critique sheets, PNG/GIF encoding and decoding, selective outlines, and Aseprite extension `0.3.0` (`save`/`history` target sprites directly without an extra `sprites` round-trip).
 - `serve --tailscale` serves the daemon to your tailnet through `tailscale serve`, open to the machine's owner. Set `ASEPRITE_MCP_TAILNET_USERS` to allow other users. Tailnet callers get view images inline and cannot stop the daemon.
 
 ## 0.1.0

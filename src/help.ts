@@ -32,7 +32,7 @@ Cel { layer, frame
   rect(r, color, o?: { fill? }): number; ellipse(r, color, o?: { fill? }): number; fill(x, y, color): number
   outline(color?, o?: { mode?: "selective"|"outside"|"inside"; rect? }): number  // selective needs no colour
   shift(dx, dy, o?: { rect? }): number
-  copy(from: { layer, frame?, sprite? } | { image: img.image }, o?: { rect?, x?, y?, flip? }): number  // not the handle itself
+  copy(from: Cel | Image | { layer, frame?, sprite? } | { image }, o?: { rect?, x?, y?, flip? }): number
   recolor(map: { "#from": "#to" }, o?: { rect? }): number; clear(r?): number
   bounds(): Rect | null  // [x, y, w, h] of the non-transparent pixels; null when empty
   read(o?: { rect?; palette? }): { palette, rows } }  // same format as map; pass your palette to keep its keys
@@ -116,9 +116,9 @@ const TOPICS: Record<HelpTopic, string> = {
   interlaced). ref.width, ref.height; ref.colors(16) lists its most common colours as hex, for a palette.
 - ref.read({ rect, palette }) returns palette + rows like cel.read. ref.downscale(4) returns a new image at
   1/4 size, each 4x4 block becoming its most common colour: use it on art drawn at 4x or 6x.
-- c.copy({ image: ref.image }, { rect: [0, 0, 16, 16], x: 8, y: 8 }) pastes the image, or a rect of it, into a
-  cel. Pass { image: ref.image }, not ref: a handle cannot be an argument. The same goes for cels:
-  c.copy({ layer: "body", frame: 2 }) copies another cel; add sprite: id for another open sprite.`,
+- c.copy(ref, { rect: [0, 0, 16, 16], x: 8, y: 8 }) pastes the image, or a rect of it, into a cel ({ image: ref.image }
+  also works). The same goes for cels: c.copy(otherCel) or c.copy({ layer: "body", frame: 2 }) copies another cel
+  (add sprite: id for another open sprite).`,
 
   files: `Files
 - sprite({ open: "/abs/path.aseprite" }) opens a file; sprite({ new: [32, 32] }) creates a sprite.

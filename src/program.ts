@@ -1,20 +1,12 @@
 // The code-mode runtime: one execute() runs one agent program against per-sprite Drafts, then commits what is
 // left as one undo step per sprite. Globals: sprite, sprites, image, ramp, palette, lib, use, help. Handles are plain objects of
-// closures; mutable state is behind methods because codemode copies plain fields once at the boundary.
-import {
-  mkdir,
-  readFile,
-  readdir,
-  realpath,
-  stat,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+// closures; mutable state is behind methods because psychoscript copies plain fields once at the boundary.
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import nodePath from "node:path";
 
-import { CodeMode, Extension } from "@opencode/codemode";
-import { Effect } from "effect";
+import { Runtime } from "psychoscript";
+import type { Diagnostic } from "psychoscript";
 
 import { checkCanvasSize, messageOf, wholeNumber } from "./check.ts";
 import { ramp, loadPalette, parseHex, savePalette } from "./color.ts";
@@ -49,7 +41,6 @@ export { DESCRIPTION } from "./help.ts";
 export interface Limits {
   draftBytes: number;
   maxOutputBytes: number;
-  maxToolCalls: number;
   timeoutMs: number;
 }
 
@@ -80,8 +71,8 @@ type RectArg = R.Rect | "selection";
 type WithRect<O> = Omit<O, "rect"> & { rect?: RectArg };
 
 /**
- * What a program passes as `from` to copy(): { layer, frame?, sprite? } or { image }. Handles themselves cannot
- * cross back into a host call because codemode refuses arguments that hold functions.
+ * What a program passes as `from` to copy(): a CelHandle, an ImageHandle, { layer, frame?, sprite? }, or { image }.
+ * With translate.functions = "drop", handles cross as their plain data fields.
  */
 interface CelRef {
   layer?: string;
@@ -247,8 +238,8 @@ interface EnvelopeBase {
 export interface ExecuteSuccess extends EnvelopeBase {
   ok: true;
   value: unknown;
-  /** Codemode diagnostics, then one line per drawing call that dropped pixels outside the canvas. */
-  warnings?: readonly (CodeMode.Diagnostic | string)[];
+  /** Runtime diagnostics, then one line per drawing call that dropped pixels outside the canvas. */
+  warnings?: readonly (Diagnostic | string)[];
 }
 export interface ExecuteFailure extends EnvelopeBase {
   ok: false;
@@ -270,12 +261,11 @@ interface CommitReply {
 export const DEFAULT_LIMITS: Limits = {
   draftBytes: 64 * 1024 * 1024,
   maxOutputBytes: 64_000,
-  maxToolCalls: 10_000,
   timeoutMs: 60_000,
 };
 const MAX_RETRIES = 3;
 const RESIZE_EXTENSION = "0.2.0";
-const KEEP_VIEWS = 200;
+const DIRECT_TARGET_EXTENSION = "0.3.0";
 // Lua prefixes "MCP: ".
 const AUTO_LABEL = "program";
 
@@ -465,7 +455,7 @@ const celHandle = (
         const rect = o?.rect;
         if (!picture || rect === "selection") {
           throw new Error(
-            "copy: pass { image: img.image } for an image from image(path); rect is [x, y, w, h] in the image."
+            "copy: pass an image handle from image(path) (or { image: img.image }); rect is [x, y, w, h] in the image."
           );
         }
         return draw("copy", (c) => R.copy(c, picture, { ...o, rect }));
@@ -473,7 +463,7 @@ const celHandle = (
       const src = from?.sprite === undefined ? st : run.states.get(from.sprite);
       if (!src || typeof from?.layer !== "string") {
         throw new Error(
-          "copy: pass { layer, frame } (add sprite: id for another sprite) or { image: img.image }."
+          "copy: pass a cel handle, { layer, frame } (add sprite: id for another sprite), or an image handle."
         );
       }
       const data = D.readable(src.d, from.layer, from.frame ?? 0);
@@ -564,7 +554,12 @@ export const createRuntime = ({
   libDir = null,
   allowedDirs = [],
   limits = {},
-}: RuntimeOptions): { execute: (code: string) => Promise<ExecuteResult> } => {
+}: RuntimeOptions): {
+  execute: (
+    code: string,
+    options?: { signal?: AbortSignal }
+  ) => Promise<ExecuteResult>;
+} => {
   const lim: Limits = { ...DEFAULT_LIMITS, ...limits };
   /** sprite id -> cel key -> RGBA this daemon last saw in Aseprite (for changes()). */
   const lastSeen = new Map<number, Map<CelKey, Uint8Array>>();
@@ -865,6 +860,9 @@ export const createRuntime = ({
     return out;
   };
 
+  const directTarget = (): boolean =>
+    compareVersions(link.status().extension, DIRECT_TARGET_EXTENSION) >= 0;
+
   const history = async (
     st: SpriteState,
     action: "undo" | "redo",
@@ -877,8 +875,12 @@ export const createRuntime = ({
       );
     }
     const { id } = st.d.sprite;
-    await activate(id);
-    await link.request("history", { action, steps: n });
+    if (directTarget()) {
+      await link.request("history", { action, sprite: id, steps: n });
+    } else {
+      await activate(id);
+      await link.request("history", { action, steps: n });
+    }
     st.d = await snapshot(id);
     lastSeen.set(id, baseMap(st.d));
   };
@@ -1003,11 +1005,14 @@ export const createRuntime = ({
       save: async (path) => {
         const abs = path === undefined ? undefined : await allowedPath(path);
         await commitDraft(run, st, AUTO_LABEL);
-        await activate(id);
-        const { result } = await link.request(
-          "save",
-          abs === undefined ? {} : { path: abs }
-        );
+        const args = {
+          ...(abs !== undefined && { path: abs }),
+          ...(directTarget() && { sprite: id }),
+        };
+        if (!directTarget()) {
+          await activate(id);
+        }
+        const { result } = await link.request("save", args);
         return record("save", result).saved;
       },
       selection: () => st.d.sprite.selection ?? null,
@@ -1121,32 +1126,10 @@ export const createRuntime = ({
     },
   });
 
-  const pruneViews = async (): Promise<void> => {
-    try {
-      const all = await readdir(viewsDir);
-      const names = all.filter((n) => n.endsWith(".png"));
-      if (names.length <= KEEP_VIEWS) {
-        return;
-      }
-      const files = await Promise.all(
-        names.map(async (n) => {
-          const p = nodePath.join(viewsDir, n);
-          const info = await stat(p);
-          return { p, t: info.mtimeMs };
-        })
-      );
-      await Promise.all(
-        files
-          .toSorted((a, b) => b.t - a.t)
-          .slice(KEEP_VIEWS)
-          .map((f) => unlink(f.p).catch(() => null))
-      );
-    } catch {
-      // Pruning is housekeeping; a failure must never fail the program that drew.
-    }
-  };
-
-  const execute = async (code: string): Promise<ExecuteResult> => {
+  const execute = async (
+    code: string,
+    options?: { signal?: AbortSignal }
+  ): Promise<ExecuteResult> => {
     const t0 = Date.now();
     const run: Run = {
       clips: new Map(),
@@ -1169,29 +1152,29 @@ export const createRuntime = ({
       });
     }
     run.libraries = new Set(prepared.libraries);
-    let r: CodeMode.Result;
+    let r: Runtime.Result;
     try {
-      const runtime = CodeMode.make({
-        extensions: [
-          Extension.make({ globals: globals(run), name: "aseprite" }),
-        ],
+      const runtime = Runtime.make({
+        globals: () => globals(run),
         limits: {
           maxOutputBytes: lim.maxOutputBytes,
-          maxToolCalls: lim.maxToolCalls,
           timeoutMs: lim.timeoutMs,
         },
-        tools: {},
+        translate: { functions: "drop" },
       });
-      r = await Effect.runPromise(runtime.execute(prepared.code));
+      r = await runtime.execute(prepared.code, { signal: options?.signal });
     } catch (error) {
+      const aborted = error instanceof Error && error.name === "AbortError";
       r = {
-        error: { kind: "ExecutionFailure", message: messageOf(error) },
+        error: {
+          kind: aborted ? "Aborted" : "ExecutionFailure",
+          message: aborted
+            ? `Execution aborted${error.cause ? `: ${messageOf(error.cause)}` : "."}`
+            : messageOf(error),
+        },
+        metadata: null,
         ok: false,
-        toolCalls: [],
       };
-    }
-    if (run.images.length) {
-      await pruneViews();
     }
     const logs = r.logs?.length ? { logs: r.logs } : {};
     const discarded = (): { discarded?: Discarded[] } => {
@@ -1206,6 +1189,16 @@ export const createRuntime = ({
       return done({
         commit: run.commits,
         error: mapError(prepared, r.error),
+        ok: false as const,
+        ...discarded(),
+        images: run.images,
+        ...logs,
+      });
+    }
+    if (options?.signal?.aborted) {
+      return done({
+        commit: run.commits,
+        error: { kind: "Aborted", message: "Execution aborted." },
         ok: false as const,
         ...discarded(),
         images: run.images,

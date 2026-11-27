@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import { test } from "node:test";
@@ -11,6 +11,7 @@ import type {
   ExecuteResult,
   ExecuteSuccess,
 } from "../src/program.ts";
+import { encodePng } from "../src/render.ts";
 import { createFakeLink, pixel } from "./fake-link.ts";
 import type { FakeLink } from "./fake-link.ts";
 
@@ -29,11 +30,17 @@ const setup = async () => {
   const link = createFakeLink();
   const runtime = createRuntime({
     allowedDirs: [dir],
+    libDir: nodePath.join(dir, "lib"),
     link,
     palettesFile: nodePath.join(dir, "palettes.json"),
     viewsDir: nodePath.join(dir, "views"),
   });
-  return { dir, link, run: (code: string) => runtime.execute(code) };
+  return {
+    dir,
+    link,
+    run: (code: string, options?: { signal?: AbortSignal }) =>
+      runtime.execute(code, options),
+  };
 };
 
 const cel = (link: FakeLink, id: number, layer = "Layer 1", frame = 0) =>
@@ -315,4 +322,87 @@ test("DESCRIPTION stays under 5,500 characters and help topics resolve", () => {
     assert.ok(help(t).length > 200, t);
   }
   assert.throws(() => help("nope"), /Topics: maps/u);
+});
+
+test("copy accepts cel and image handles directly", async () => {
+  const { dir, link, run } = await setup();
+  const refPath = nodePath.join(dir, "ref.png");
+  await writeFile(refPath, encodePng(1, 1, Uint8Array.of(0, 255, 0, 255)));
+  const r = await run(`
+    const s = await sprite({ new: [4, 4] })
+    const c0 = s.cel("Layer 1")
+    c0.px([[0, 0, "#ff0000"]])
+    s.setFrames(2)
+    const c1 = s.cel("Layer 1", 1)
+    c1.clear()
+    const fromCel = c1.copy(c0, { rect: [0, 0, 1, 1], x: 2, y: 2 })
+    const ref = await image(${JSON.stringify(refPath)})
+    const fromImg = c1.copy(ref, { x: 3, y: 3 })
+    return { fromCel, fromImg }
+  `);
+  assert.deepEqual(pass(r).value, { fromCel: 1, fromImg: 1 });
+  const id = r.commit[0].sprite;
+  assert.deepEqual(
+    pixel(cel(link, id, "Layer 1", 1), 4, 2, 2),
+    [255, 0, 0, 255]
+  );
+  assert.deepEqual(
+    pixel(cel(link, id, "Layer 1", 1), 4, 3, 3),
+    [0, 255, 0, 255]
+  );
+});
+
+test("programs support ES classes and map errors in saved libraries", async () => {
+  const { run } = await setup();
+  pass(
+    await run(`
+      await lib("brush", \`
+        class Brush {
+          constructor(color) { this.color = color }
+          dot(c, x, y) { return c.px([[x, y, this.color]]) }
+        }
+        function broken() { return null.nope }
+      \`)
+    `)
+  );
+  const ok = await run(`
+    use("brush")
+    const s = await sprite({ new: [4, 4] })
+    return new Brush("#0000ff").dot(s.cel("Layer 1"), 1, 1)
+  `);
+  assert.equal(pass(ok).value, 1);
+
+  const bad = await run(`use("brush")\nbroken()`);
+  const badFail = fail(bad);
+  assert.equal(badFail.error.library, "brush");
+  assert.equal(badFail.error.line, 6);
+});
+
+test("aborting a program stops execution and discards uncommitted edits", async () => {
+  const { link, run } = await setup();
+  const controller = new AbortController();
+  let blocked = false;
+  link.beforeRequest = (cmd) => {
+    if (cmd === "sprites" && !blocked) {
+      blocked = true;
+      setTimeout(() => controller.abort("client gone"), 5);
+    }
+  };
+  const r = await run(
+    `
+      const s = await sprite({ new: [4, 4] })
+      s.cel("Layer 1").px([[0, 0, "#ff0000"]])
+      await sprites()
+      for (;;) {
+        await sprites()
+      }
+    `,
+    { signal: controller.signal }
+  );
+  const rBad = fail(r);
+  assert.equal(rBad.error.kind, "Aborted");
+  assert.match(rBad.error.message, /client gone/u);
+  assert.deepEqual(r.commit, []);
+  assert.deepEqual(rBad.discarded, [{ cels: 1, sprite: 1 }]);
+  assert.equal(cel(link, 1), undefined);
 });

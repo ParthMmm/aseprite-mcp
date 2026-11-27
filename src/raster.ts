@@ -23,7 +23,6 @@ export type Rect = [x: number, y: number, w: number, h: number];
 /** A rect clipped to the canvas: [x0, y0, x1, y1), possibly empty. */
 export type Bounds = [x0: number, y0: number, x1: number, y1: number];
 export type Rgba = readonly [r: number, g: number, b: number, a: number];
-type Rgb = [r: number, g: number, b: number];
 export type Flip = "h" | "v" | "hv";
 /** One-character keys to colour strings. */
 export type Palette = Record<string, string>;
@@ -79,7 +78,15 @@ const rgba = (c: unknown): Rgba => {
   return a === 0 ? CLEAR : [r, g, b, a];
 };
 
-const put = (cv: Canvas, x: number, y: number, [r, g, b, a]: Rgba): 0 | 1 => {
+const putRgba = (
+  cv: Canvas,
+  x: number,
+  y: number,
+  r: number,
+  g: number,
+  b: number,
+  a: number
+): 0 | 1 => {
   if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) {
     if (a !== 0) {
       cv.clipped = (cv.clipped ?? 0) + 1;
@@ -101,6 +108,9 @@ const put = (cv: Canvas, x: number, y: number, [r, g, b, a]: Rgba): 0 | 1 => {
   d[i + 3] = a;
   return 1;
 };
+
+const put = (cv: Canvas, x: number, y: number, [r, g, b, a]: Rgba): 0 | 1 =>
+  putRgba(cv, x, y, r, g, b, a);
 
 /** 32-bit key of the pixel at byte offset i; every transparent pixel is 0. */
 const keyAt = (d: Uint8Array, i: number): number =>
@@ -157,6 +167,22 @@ export const flipRows = (rows: string[], flip?: Flip): string[] => {
   return vertical ? mirrored.toReversed() : mirrored;
 };
 
+const missingPaletteKeys = (
+  rows: string[],
+  colors: Map<string, Rgba>
+): Set<string> | undefined => {
+  let missing: Set<string> | undefined;
+  for (const row of rows) {
+    for (const ch of row) {
+      if (ch !== "." && ch !== " " && !colors.has(ch)) {
+        missing ??= new Set();
+        missing.add(ch);
+      }
+    }
+  }
+  return missing;
+};
+
 /**
  * Pixel map: one character per pixel. "." and " " leave the pixel; a key mapped to "#00000000" erases.
  * Validates every character before writing, so a bad map changes nothing.
@@ -167,26 +193,30 @@ export const map = (
   rows: string[],
   { x = 0, y = 0, flip }: MapOptions = {}
 ): number => {
-  const colors = new Map(
-    Object.entries(palette ?? {}).map(([k, c]) => [k, rgba(c)])
-  );
-  const chars = flipRows(rows, flip).map((r) => [...r]);
-  const missing = new Set(
-    chars.flat().filter((ch) => !SKIP_CHARS.has(ch) && !colors.has(ch))
-  );
-  if (missing.size) {
+  const colors = new Map<string, Rgba>();
+  for (const [k, c] of Object.entries(palette ?? {})) {
+    colors.set(k, rgba(c));
+  }
+  const oriented = flip ? flipRows(rows, flip) : rows;
+  const missing = missingPaletteKeys(oriented, colors);
+  if (missing?.size) {
     throw new Error(
       `Characters not in palette: ${[...missing].map((c) => JSON.stringify(c)).join(", ")}. ` +
         `Palette keys: ${[...colors.keys()].join("") || "(none)"}; use '.' or space for "leave unchanged".`
     );
   }
   let n = 0;
-  for (const [j, row] of chars.entries()) {
-    for (const [i, ch] of row.entries()) {
-      const c = colors.get(ch);
-      if (c && !SKIP_CHARS.has(ch)) {
-        n += put(cv, x + i, y + j, c);
+  for (let j = 0; j < oriented.length; j += 1) {
+    const row = oriented[j];
+    let i = 0;
+    for (const ch of row) {
+      if (ch !== "." && ch !== " ") {
+        const c = colors.get(ch);
+        if (c) {
+          n += putRgba(cv, x + i, y + j, c[0], c[1], c[2], c[3]);
+        }
       }
+      i += 1;
     }
   }
   return n;
@@ -377,6 +407,7 @@ export const fill = (
   if (target === keyOf(c)) {
     return 0;
   }
+  const [cr, cg, cb, ca] = c;
   const seen = new Uint8Array(w * h);
   const stack = [y * w + x];
   seen[y * w + x] = 1;
@@ -384,17 +415,30 @@ export const fill = (
   for (let p = stack.pop(); p !== undefined; p = stack.pop()) {
     const px0 = p % w;
     const py0 = (p - px0) / w;
-    n += put(cv, px0, py0, c);
-    for (const [nx, ny] of [
-      [px0 + 1, py0],
-      [px0 - 1, py0],
-      [px0, py0 + 1],
-      [px0, py0 - 1],
-    ]) {
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
-        continue;
+    n += putRgba(cv, px0, py0, cr, cg, cb, ca);
+    if (px0 + 1 < w) {
+      const q = p + 1;
+      if (!seen[q] && keyAt(d, q * 4) === target) {
+        seen[q] = 1;
+        stack.push(q);
       }
-      const q = ny * w + nx;
+    }
+    if (px0 > 0) {
+      const q = p - 1;
+      if (!seen[q] && keyAt(d, q * 4) === target) {
+        seen[q] = 1;
+        stack.push(q);
+      }
+    }
+    if (py0 + 1 < h) {
+      const q = p + w;
+      if (!seen[q] && keyAt(d, q * 4) === target) {
+        seen[q] = 1;
+        stack.push(q);
+      }
+    }
+    if (py0 > 0) {
+      const q = p - w;
       if (!seen[q] && keyAt(d, q * 4) === target) {
         seen[q] = 1;
         stack.push(q);
@@ -411,11 +455,6 @@ const SIDES = [
   [0, -1],
 ] as const;
 const AROUND = [...SIDES, [1, 1], [-1, 1], [1, -1], [-1, -1]] as const;
-
-interface Vote {
-  n: number;
-  rgb: Rgb;
-}
 
 /**
  * 1 px outline around everything opaque (alpha >= 128 counts as solid).
@@ -448,8 +487,10 @@ export const outline = (
   const [x0, y0, x1, y1] = clip(cv, r);
 
   // Derived from the fill the pixel borders: its commonest solid neighbour, shaded by which side the shape lies on.
+  const votes = new Map<number, number>();
+  const shadeCache = new Map<number, Rgba>();
   const shaded = (x: number, y: number): Rgba | null => {
-    const votes = new Map<string, Vote>();
+    votes.clear();
     let pullX = 0;
     let pullY = 0;
     for (const [dx, dy] of AROUND) {
@@ -457,32 +498,43 @@ export const outline = (
         continue;
       }
       const i = ((y + dy) * w + x + dx) * 4;
-      const rgb: Rgb = [d[i], d[i + 1], d[i + 2]];
-      const entry = votes.get(rgb.join(",")) ?? { n: 0, rgb };
-      entry.n += 1;
-      votes.set(rgb.join(","), entry);
+      const rgbKey = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+      votes.set(rgbKey, (votes.get(rgbKey) ?? 0) + 1);
       pullX += dx;
       pullY += dy;
     }
-    let best: Vote | undefined;
-    for (const v of votes.values()) {
-      if (!best || v.n > best.n) {
-        best = v;
+    let bestKey = -1;
+    let bestCount = 0;
+    for (const [rgbKey, count] of votes) {
+      if (count > bestCount) {
+        bestKey = rgbKey;
+        bestCount = count;
       }
     }
-    if (!best) {
+    if (bestKey === -1) {
       return null;
     }
-    const [L, C, hue] = rgbToOklch(...best.rgb);
     // The shape lies right or below, so this edge faces the top-left light.
     const towardLight = pullX + pullY > 0;
+    const cacheKey = bestKey * 2 + (towardLight ? 1 : 0);
+    const cached = shadeCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const [L, C, hue] = rgbToOklch(
+      (bestKey >> 16) & 0xff,
+      (bestKey >> 8) & 0xff,
+      bestKey & 0xff
+    );
     const factor = 1 - strength * (towardLight ? 0.35 : 0.85);
     const [sr, sg, sb] = oklchToRgb(
       L * factor,
       C * 1.1,
       towardLight ? hue : hueToward(hue, SHADOW_HUE, 20)
     );
-    return [sr, sg, sb, 255];
+    const out: Rgba = [sr, sg, sb, 255];
+    shadeCache.set(cacheKey, out);
+    return out;
   };
 
   const planned: [x: number, y: number, c: Rgba][] = [];
@@ -557,14 +609,18 @@ export const copy = (
   const fv = flip === "v" || flip === "hv";
   let n = 0;
   for (let j = 0; j < h; j += 1) {
+    const srcRow = (fv ? h - 1 - j : j) * w;
     for (let i = 0; i < w; i += 1) {
-      const k = ((fv ? h - 1 - j : j) * w + (fh ? w - 1 - i : i)) * 4;
-      n += put(dst, ox + i, oy + j, [
+      const k = (srcRow + (fh ? w - 1 - i : i)) * 4;
+      n += putRgba(
+        dst,
+        ox + i,
+        oy + j,
         tmp[k],
         tmp[k + 1],
         tmp[k + 2],
-        tmp[k + 3],
-      ]);
+        tmp[k + 3]
+      );
     }
   }
   return n;
@@ -578,9 +634,10 @@ const clearRaw = (cv: Canvas, [x0, y0, x1, y1]: Bounds): void => {
 const copyRaw = (dst: Canvas, src: Canvas, ox: number, oy: number): void => {
   const s = src.data;
   for (let j = 0; j < src.height; j += 1) {
+    const row = j * src.width;
     for (let i = 0; i < src.width; i += 1) {
-      const k = (j * src.width + i) * 4;
-      put(dst, ox + i, oy + j, [s[k], s[k + 1], s[k + 2], s[k + 3]]);
+      const k = (row + i) * 4;
+      putRgba(dst, ox + i, oy + j, s[k], s[k + 1], s[k + 2], s[k + 3]);
     }
   }
 };
