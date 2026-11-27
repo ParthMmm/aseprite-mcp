@@ -58,6 +58,8 @@ Other commands:
 | --- | --- |
 | `node bin/aseprite-mcp.ts status` | Show whether the daemon runs and Aseprite is connected. |
 | `node bin/aseprite-mcp.ts stop` | Stop the daemon. |
+| `node bin/aseprite-mcp.ts token [--new]` | Print or rotate the Aseprite pairing token. |
+| `node bin/aseprite-mcp.ts token --remote [--new]` | Print or rotate the remote HTTP bearer token. |
 
 ### Use it from other machines over Tailscale
 
@@ -249,7 +251,7 @@ Rules:
 - Return only what you need, such as counts or a few rows.
 - `view()` writes a PNG and returns its path. With `critique: true`, the image shows color, grayscale values, silhouette and true size. `background: "#080707"` draws that color instead of the checkerboard.
 - Pixels that a drawing call puts outside the canvas are dropped. The result's `warnings` list each such call once, for example `map on "body"@0 dropped 12 pixels outside the 48x48 canvas`.
-- `s.resize(64, 64, { x, y })` changes the canvas size, not the scale of the art. The art moves by `(x, y)`. By default it stays at the bottom center, so a figure on a baseline stays on it. `resize` returns a handle with the new `width` and `height`, and it commits in the same undo step as the other edits. It needs extension 0.2.0.
+- `s.resize(64, 64, { x, y })` changes the canvas size, not the scale of the art. The art moves by `(x, y)`. By default it stays at the bottom center, so a figure on a baseline stays on it. `resize` returns a handle with the new `width` and `height`, and it commits in the same undo step as the other edits. It needs extension 0.2.0 or later.
 
 ### Saved helper code
 
@@ -320,7 +322,24 @@ npm run fix          # apply safe fixes, then rerun the tests
 
 `node --test` also runs `test/aseprite.test.ts`. It runs `test/aseprite-handlers.lua` in a real Aseprite in batch mode, and it skips when it cannot find the app. Set `ASEPRITE=/path/to/aseprite` to point to the binary.
 
-`npm run build` writes `dist/aseprite-mcp.aseprite-extension`.
+`npm run build` writes `dist/aseprite-mcp.aseprite-extension` (currently extension `0.3.0`).
+
+### Architecture
+
+See [GLOSSARY.md](GLOSSARY.md) for the domain terms used across the codebase.
+
+| Path | Responsibility |
+| --- | --- |
+| `bin/aseprite-mcp.ts` | CLI (`serve`, `token`, `status`, `stop`, and stdio MCP proxy) |
+| `src/daemon.ts` | HTTP MCP server, loopback/tailnet/remote bearer auth, and `/health` + `/shutdown` |
+| `src/program.ts` | `psychoscript` sandbox runtime and the `execute` tool API |
+| `src/session.ts` | Sprite Session over `Link` (drafts, diffs, compare-and-swap commits, conflict merges, artist changes) |
+| `src/link.ts`, `src/wire.ts` | Authenticated WebSocket transport and binary frame protocol |
+| `src/render.ts`, `src/codecs.ts` | Compositing, Views, Critique Sheets, sprite sheet/GIF export, and PNG/GIF codecs |
+| `src/raster.ts`, `src/color.ts` | Native pixel drawing operations and OKLCH/hex color math |
+| `src/files.ts`, `src/library.ts` | Injectable `Workspace` storage (path sandboxing, tokens, views, backups, palettes) and saved libraries |
+| `src/tailnet.ts` | Tailscale Serve integration and LAN/tailnet address discovery |
+| `extension/` | Aseprite Lua plugin (`0.3.0`) |
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "aseprite-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server that lets an AI agent draw pixel art live in Aseprite by writing JavaScript programs",
   "keywords": [
     "ai-agent",
