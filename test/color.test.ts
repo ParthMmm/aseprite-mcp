@@ -1,19 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import nodePath from "node:path";
 import { test } from "node:test";
 
 import {
-  normHex,
-  parseHex,
   formatHex,
-  rgbToOklch,
+  normHex,
   oklchToRgb,
+  parseHex,
   ramp,
-  loadPalette,
-  savePalette,
-  loadPalettes,
+  rgbToOklch,
 } from "../src/color.ts";
 
 test("hex parse and format accept every short and long form", () => {
@@ -61,32 +55,4 @@ test("hueShift 0 keeps the hue; a larger shift moves the shadow further", () => 
 test("ramp rejects skip characters and duplicate keys", () => {
   assert.throws(() => ramp("#b13e53", "a.b"), /cannot be palette keys/u);
   assert.throws(() => ramp("#b13e53", "aa"), /distinct/u);
-});
-
-test("named palettes save, load and survive other names", async () => {
-  const dir = await mkdtemp(nodePath.join(tmpdir(), "palettes-"));
-  try {
-    const file = nodePath.join(dir, "nested", "palettes.json");
-    assert.deepEqual(await loadPalettes(file), {});
-    await savePalette(file, "skin", { a: "#ffcd75", b: "#b13e53" });
-    await savePalette(file, "sea", { s: "#29366f" });
-    assert.deepEqual(await loadPalette(file, "skin"), {
-      a: "#ffcd75",
-      b: "#b13e53",
-    });
-    assert.deepEqual(Object.keys(JSON.parse(await readFile(file, "utf-8"))), [
-      "skin",
-      "sea",
-    ]);
-    await assert.rejects(
-      loadPalette(file, "nope"),
-      /No saved palette 'nope'. Saved: skin, sea/u
-    );
-    await assert.rejects(
-      savePalette(file, "bad", { x: "blue" }),
-      /Not a colour/u
-    );
-  } finally {
-    await rm(dir, { force: true, recursive: true });
-  }
 });

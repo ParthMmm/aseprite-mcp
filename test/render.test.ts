@@ -1,68 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inflateSync } from "node:zlib";
 
+import { decodePng } from "../src/codecs.ts";
 import {
-  encodePng,
+  buildSpriteExport,
   composite,
-  renderView,
   critiqueSheet,
-  frameStrip,
+  renderSpriteView,
+  renderView,
 } from "../src/render.ts";
 
-const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-
-const crcOf = (buf: Uint8Array) => {
-  let crc = ~0;
-  for (const byte of buf) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) {
-      crc = (crc >>> 1) ^ (0xed_b8_83_20 & -(crc & 1));
-    }
-  }
-  return ~crc >>> 0;
-};
-
-/** Minimal decoder for the PNGs encodePng writes: checks every chunk CRC and returns RGBA. */
-const decodePng = (png: Buffer) => {
-  assert.deepEqual([...png.subarray(0, 8)], SIGNATURE);
-  const chunks = [];
-  for (let o = 8; o < png.length;) {
-    const len = png.readUInt32BE(o);
-    const type = png.toString("ascii", o + 4, o + 8);
-    const body = png.subarray(o + 8, o + 8 + len);
-    assert.equal(
-      png.readUInt32BE(o + 8 + len),
-      crcOf(png.subarray(o + 4, o + 8 + len)),
-      `${type} crc`
-    );
-    chunks.push({ body, type });
-    o += 12 + len;
-  }
-  assert.deepEqual(
-    chunks.map((c) => c.type),
-    ["IHDR", "IDAT", "IEND"]
-  );
-  const ihdr = chunks[0].body;
-  const width = ihdr.readUInt32BE(0);
-  const height = ihdr.readUInt32BE(4);
-  assert.deepEqual(
-    [...ihdr.subarray(8)],
-    [8, 6, 0, 0, 0],
-    "8-bit RGBA, no interlace"
-  );
-  const raw = inflateSync(chunks[1].body);
-  assert.equal(raw.length, (width * 4 + 1) * height);
-  const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y += 1) {
-    assert.equal(raw[y * (width * 4 + 1)], 0, "filter 0");
-    data.set(
-      raw.subarray(y * (width * 4 + 1) + 1, (y + 1) * (width * 4 + 1)),
-      y * width * 4
-    );
-  }
-  return { data, height, width };
-};
 const pixel = (
   img: { data: Uint8Array; width: number },
   x: number,
@@ -70,14 +17,6 @@ const pixel = (
 ) => [
   ...img.data.subarray((y * img.width + x) * 4, (y * img.width + x) * 4 + 4),
 ];
-
-test("encodePng round trips through a strict decoder", () => {
-  const rgba = new Uint8Array(3 * 2 * 4).map((_, i) => (i * 29) % 256);
-  const img = decodePng(encodePng(3, 2, rgba));
-  assert.equal(img.width, 3);
-  assert.equal(img.height, 2);
-  assert.deepEqual(img.data, rgba);
-});
 
 test("composite blends visible layers bottom to top at their opacity", () => {
   const bottom = new Uint8Array([255, 0, 0, 255, 0, 0, 0, 0, 10, 20, 30, 255]);
@@ -97,7 +36,7 @@ test("composite blends visible layers bottom to top at their opacity", () => {
   assert.deepEqual([...out.data.subarray(8, 12)], [10, 20, 30, 255]);
 });
 
-test("renderView scales each pixel and shows a checkerboard behind transparency", () => {
+test("renderView scales each pixel and shows a checkerboard or solid background", () => {
   const cv = {
     data: new Uint8Array([255, 0, 0, 255, 0, 0, 0, 0]),
     height: 1,
@@ -115,6 +54,10 @@ test("renderView scales each pixel and shows a checkerboard behind transparency"
   }
   assert.deepEqual(pixel(img, 4, 0), [204, 204, 204, 255]);
   assert.deepEqual(pixel(img, 6, 0), [255, 255, 255, 255]);
+
+  const bg = decodePng(renderView(cv, { background: [8, 7, 7], scale: 2 }).png);
+  assert.deepEqual(pixel(bg, 2, 0), [8, 7, 7, 255]);
+
   const plain = decodePng(renderView(cv, { checker: false, scale: 1 }).png);
   assert.deepEqual([...plain.data], [...cv.data]);
 });
@@ -140,7 +83,7 @@ test("renderView picks a scale near 512 px and refuses huge images", () => {
   );
 });
 
-test("critiqueSheet lays out colour, gray, silhouette and 1x panels", () => {
+test("critiqueSheet lays out colour, gray, silhouette, deutan and 1x panels", () => {
   const cv = {
     data: new Uint8Array([
       255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255,
@@ -174,30 +117,112 @@ test("critiqueSheet lays out colour, gray, silhouette and 1x panels", () => {
   );
   assert.deepEqual(pixel(img, 34, 4), [255, 0, 0, 255], "1x panel");
   assert.deepEqual(pixel(img, 35, 5), [0, 0, 255, 255], "1x panel");
+
+  const withDeutan = decodePng(
+    critiqueSheet(cv, {
+      background: [16, 16, 16],
+      panels: ["deutan"],
+      scale: 2,
+    }).png
+  );
+  assert.deepEqual(pixel(withDeutan, 6, 4), [16, 16, 16, 255]);
+  assert.notDeepEqual(pixel(withDeutan, 4, 4), [255, 0, 0, 255]);
+
   assert.throws(
     () => critiqueSheet(cv, { panels: ["sepia"] as never }),
     /Unknown critique panel/u
   );
 });
 
-test("frameStrip places frames left to right with a transparent gap", () => {
+test("renderSpriteView joins multiple frames side by side with a 1px gap", () => {
   const a = {
-    data: new Uint8Array([1, 1, 1, 255, 2, 2, 2, 255]),
+    data: new Uint8Array([255, 0, 0, 255, 0, 255, 0, 255]),
     height: 2,
     width: 1,
   };
   const b = {
-    data: new Uint8Array([3, 3, 3, 255, 4, 4, 4, 255]),
+    data: new Uint8Array([0, 0, 255, 255, 255, 255, 0, 255]),
     height: 2,
     width: 1,
   };
-  const strip = frameStrip([a, b]);
+  const strip = renderSpriteView([a, b], {
+    background: "#080707",
+    scale: 1,
+  });
   assert.deepEqual([strip.width, strip.height], [3, 2]);
+  const img = decodePng(strip.png);
+  assert.deepEqual(pixel(img, 0, 0), [255, 0, 0, 255]);
+  assert.deepEqual(pixel(img, 1, 0), [8, 7, 7, 255]);
+  assert.deepEqual(pixel(img, 2, 1), [255, 255, 0, 255]);
+});
+
+test("buildSpriteExport builds scaled grid sheet JSON/PNG, GIF, and slices by tag", () => {
+  const frames = [0, 1, 2, 3].map((i) => ({
+    data: new Uint8Array([i * 60, 10, 20, 255, 0, 0, 0, 0]),
+    height: 1,
+    width: 2,
+  }));
+  const built = buildSpriteExport({
+    columns: 2,
+    durations: [80, 100, 120, 140],
+    frames,
+    gif: true,
+    scale: 2,
+    sheet: true,
+    sheetImageName: "hero.png",
+    tag: "run",
+    tags: [
+      { direction: "forward", from: 0, name: "idle", to: 0 },
+      { direction: "pingpong", from: 1, name: "run", to: 3 },
+    ],
+  });
   assert.deepEqual(
-    [...strip.data],
+    { frames: built.frames, height: built.height, width: built.width },
+    { frames: 3, height: 2, width: 4 }
+  );
+  assert.ok(built.sheetPng && built.sheetJson && built.gif);
+  const sheetImg = decodePng(built.sheetPng);
+  assert.deepEqual([sheetImg.width, sheetImg.height], [8, 4]);
+  const meta = JSON.parse(built.sheetJson);
+  assert.equal(meta.image, "hero.png");
+  assert.equal(meta.scale, 2);
+  assert.deepEqual(meta.size, { h: 4, w: 8 });
+  assert.deepEqual(meta.tags, [
+    { direction: "pingpong", from: 0, name: "run", to: 2 },
+  ]);
+  assert.deepEqual(
+    meta.frames.map((f: { duration: number; x: number; y: number }) => [
+      f.x,
+      f.y,
+      f.duration,
+    ]),
     [
-      1, 1, 1, 255, 0, 0, 0, 0, 3, 3, 3, 255, 2, 2, 2, 255, 0, 0, 0, 0, 4, 4, 4,
-      255,
+      [0, 0, 100],
+      [4, 0, 120],
+      [0, 2, 140],
     ]
+  );
+  assert.equal(built.gif.toString("ascii", 0, 6), "GIF89a");
+
+  assert.throws(
+    () =>
+      buildSpriteExport({
+        durations: [100],
+        frames: [frames[0]],
+        gif: false,
+        sheet: false,
+        tags: [],
+      }),
+    /sheet and gif are both false/u
+  );
+  assert.throws(
+    () =>
+      buildSpriteExport({
+        durations: [100],
+        frames: [frames[0]],
+        tag: "missing",
+        tags: [],
+      }),
+    /no tag 'missing'/u
   );
 });

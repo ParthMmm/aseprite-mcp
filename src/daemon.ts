@@ -14,21 +14,14 @@ import {
   ErrorCode,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import {
-  AUTOSAVE_DIR,
-  FILE_DIRS,
-  LIB_DIR,
-  PALETTE_FILE,
-  SPRITES_DIR,
-  VIEWS_DIR,
-  createBackups,
-  loadToken,
-  pruneViews,
-} from "./files.ts";
-import type { BackupSprite } from "./files.ts";
+import { createWorkspace } from "./files.ts";
+import type { BackupSprite, Workspace } from "./files.ts";
 import { createLink } from "./link.ts";
 import type { Link } from "./link.ts";
+import type { RuntimeOptions } from "./program.ts";
 import type { Tailnet } from "./tailnet.ts";
+
+export type { RuntimeOptions } from "./program.ts";
 
 const HOST = "127.0.0.1";
 const MAX_BODY = 16 * 1024 * 1024;
@@ -41,16 +34,6 @@ export interface Envelope {
   images?: string[];
   commit?: BackupSprite[];
   [key: string]: unknown;
-}
-
-export interface RuntimeOptions {
-  allowedDirs: string[];
-  libDir: string | null;
-  limits: object;
-  link: Link;
-  palettesFile: string;
-  spritesDir: string;
-  viewsDir: string;
 }
 
 export interface Runtime {
@@ -69,6 +52,8 @@ type Access = "loopback" | "tailnet";
 
 export interface DaemonOptions {
   program: Program;
+  workspace?: Workspace;
+  link?: Link;
   tailnet?: Tailnet | null;
   version: string;
   httpPort: number;
@@ -243,6 +228,8 @@ const mcpServer = (
 /** Starts the daemon, or returns null when another process holds `httpPort`. */
 export const startDaemon = async ({
   program,
+  workspace = createWorkspace(),
+  link: injectedLink,
   version,
   httpPort,
   wsPort,
@@ -265,23 +252,26 @@ export const startDaemon = async ({
 
   // Requests that arrive while the link starts wait for it.
   const ready = (async () => {
-    const link = createLink({
-      autosaveDir: AUTOSAVE_DIR,
-      log,
-      port: wsPort,
-      token: (await loadToken()) ?? "",
-    });
-    const backups = createBackups({ link, log });
+    let ownedLink: ReturnType<typeof createLink> | null = null;
+    let link: Link;
+    if (injectedLink) {
+      link = injectedLink;
+    } else {
+      ownedLink = createLink({
+        autosaveDir: workspace.autosaveDir,
+        log,
+        port: wsPort,
+        token: (await workspace.loadToken()) ?? "",
+      });
+      link = ownedLink;
+    }
+    const backups = workspace.createBackups({ link, log });
     setTimeout(() => backups.cleanup(), 2000).unref();
-    await mkdir(VIEWS_DIR, { recursive: true });
+    await mkdir(workspace.viewsDir, { recursive: true });
     const runtime = program.createRuntime({
-      allowedDirs: FILE_DIRS,
-      libDir: LIB_DIR,
       limits: {},
       link,
-      palettesFile: PALETTE_FILE,
-      spritesDir: SPRITES_DIR,
-      viewsDir: VIEWS_DIR,
+      workspace,
     });
     const execute = async (
       code: string,
@@ -290,17 +280,19 @@ export const startDaemon = async ({
       const envelope = await runtime.execute(code, options);
       backups.schedule(envelope.commit ?? []);
       if (envelope.images?.length) {
-        Promise.allSettled([pruneViews()]);
+        Promise.allSettled([workspace.pruneViews()]);
       }
       return envelope;
     };
-    return { backups, execute, link };
+    return { backups, execute, link, ownedLink };
   })();
 
   const close = async (): Promise<void> => {
-    const { link, backups } = await ready;
+    const { ownedLink, backups } = await ready;
     await backups.flush().catch(ignore);
-    await link.close();
+    if (ownedLink) {
+      await ownedLink.close();
+    }
     http.closeAllConnections();
     const stopped = once(http, "close");
     http.close();

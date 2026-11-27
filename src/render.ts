@@ -1,13 +1,10 @@
-// Pixels to and from image files: the PNG encoder and decoder, layer compositing, upscaled views, the critique
-// sheet, sprite sheets and the GIF encoder.
-import { crc32 as zlibCrc32, deflateSync, inflateSync } from "node:zlib";
+// Deep Sprite Rendering & Export module: layer compositing, upscaled views, critique sheets,
+// sprite-sheet layouts, and export artifact assembly. Binary PNG/GIF encoding lives in codecs.ts.
+import { wholeNumber } from "./check.ts";
+import { encodeGif, encodePng, guardImage } from "./codecs.ts";
+import { fromLinear, parseHex, toLinear } from "./color.ts";
+import type { Canvas } from "./raster.ts";
 
-/** RGBA, row-major */
-export interface Canvas {
-  width: number;
-  height: number;
-  data: Uint8Array;
-}
 export interface Rendered {
   png: Buffer;
   width: number;
@@ -20,54 +17,53 @@ export interface Layer {
   opacity?: number;
 }
 export type CritiquePanel = "color" | "gray" | "silhouette" | "deutan" | "1x";
+export interface ExportTag {
+  name: string;
+  from: number;
+  to: number;
+  direction: string;
+}
+export interface ExportInput {
+  frames: readonly Canvas[];
+  durations: readonly number[];
+  tags: readonly ExportTag[];
+  sheetImageName?: string;
+  scale?: number;
+  tag?: unknown;
+  sheet?: boolean;
+  gif?: boolean;
+  columns?: number;
+}
+export interface BuiltExport {
+  frames: number;
+  width: number;
+  height: number;
+  sheetPng?: Buffer;
+  sheetJson?: string;
+  gif?: Buffer;
+}
+
 type Rgb = [number, number, number];
 /** A view's background colour, drawn instead of the checkerboard. */
 type Backdrop = readonly [r: number, g: number, b: number];
 
-const PNG_SIGNATURE = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-]);
-const MAX_OUTPUT_PIXELS = 4096 * 4096;
 const VIEW_DEFLATE_LEVEL = 3;
 
-const pngChunk = (type: string, body: Uint8Array): Buffer => {
-  const out = Buffer.allocUnsafe(12 + body.length);
-  out.writeUInt32BE(body.length, 0);
-  out.write(type, 4, "ascii");
-  out.set(body, 8);
-  out.writeUInt32BE(
-    zlibCrc32(out.subarray(4, 8 + body.length)),
-    8 + body.length
-  );
-  return out;
-};
-
-/** 8-bit RGBA PNG; every row uses filter type 0. */
-export const encodePng = (
-  width: number,
-  height: number,
-  rgba: Uint8Array,
-  level = 6
-): Buffer => {
-  const stride = width * 4;
-  const raw = Buffer.allocUnsafe((stride + 1) * height);
-  for (let y = 0; y < height; y += 1) {
-    const row = y * (stride + 1);
-    raw[row] = 0;
-    raw.set(rgba.subarray(y * stride, (y + 1) * stride), row + 1);
-  }
-  const header = Buffer.allocUnsafe(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
-  // Depth 8, colour type 6 (RGBA), deflate, adaptive filtering, no interlace.
-  header.set([8, 6, 0, 0, 0], 8);
-  return Buffer.concat([
-    PNG_SIGNATURE,
-    pngChunk("IHDR", header),
-    pngChunk("IDAT", deflateSync(raw, { level })),
-    pngChunk("IEND", Buffer.alloc(0)),
-  ]);
-};
+export const CRITIQUE_PANELS: readonly CritiquePanel[] = [
+  "color",
+  "gray",
+  "silhouette",
+  "deutan",
+  "1x",
+];
+const SHEET_GAP = 4;
+const SHEET_BACKGROUND: readonly number[] = [96, 96, 104, 255];
+// Machado et al. 2009, deuteranopia at full severity, applied to linear light.
+const DEUTAN: readonly Rgb[] = [
+  [0.367322, 0.860646, -0.227968],
+  [0.280085, 0.672501, 0.047413],
+  [-0.01182, 0.04294, 0.968881],
+];
 
 /**
  * Visible layers, bottom to top, source-over at their opacity (0-255).
@@ -180,17 +176,79 @@ const fillCheckerBlock = (
   }
 };
 
-export const guardImage = (
-  what: string,
-  W: number,
-  H: number,
-  hint = ""
+interface BlockTarget {
+  out: Uint8Array;
+  rowBytes: number;
+  cols: Uint8Array | null;
+  ground: readonly number[] | undefined;
+  checker: boolean;
+  size: number;
+  cell: number;
+}
+
+/** Shared source-pixel upscaling for renderView and critiqueSheet panels. */
+const drawScaledPixel = (
+  target: BlockTarget,
+  panelX: number,
+  panelY: number,
+  dstLeft: number,
+  dstTop: number,
+  r: number,
+  g: number,
+  b: number,
+  a: number
 ): void => {
-  if (W * H > MAX_OUTPUT_PIXELS) {
-    throw new Error(
-      `${what} would be ${W}x${H} px, over the limit of ${MAX_OUTPUT_PIXELS} pixels${hint}.`
+  const { out, rowBytes, cols, ground, checker, size, cell } = target;
+  if (!checker || a === 255) {
+    fillBlock(
+      out,
+      rowBytes,
+      dstLeft,
+      dstTop,
+      size,
+      Math.round(r),
+      Math.round(g),
+      Math.round(b),
+      a
     );
+    return;
   }
+  const cover = a / 255;
+  const inv = 1 - cover;
+  if (ground) {
+    fillBlock(
+      out,
+      rowBytes,
+      dstLeft,
+      dstTop,
+      size,
+      Math.round(r * cover + ground[0] * inv),
+      Math.round(g * cover + ground[1] * inv),
+      Math.round(b * cover + ground[2] * inv),
+      255
+    );
+    return;
+  }
+  if (!cols) {
+    return;
+  }
+  fillCheckerBlock(
+    out,
+    rowBytes,
+    cols,
+    panelX,
+    panelY,
+    dstLeft,
+    dstTop,
+    size,
+    cell,
+    a === 0 ? 204 : Math.round(r * cover + 204 * inv),
+    a === 0 ? 204 : Math.round(g * cover + 204 * inv),
+    a === 0 ? 204 : Math.round(b * cover + 204 * inv),
+    a === 0 ? 255 : Math.round(r * cover + 255 * inv),
+    a === 0 ? 255 : Math.round(g * cover + 255 * inv),
+    a === 0 ? 255 : Math.round(b * cover + 255 * inv)
+  );
 };
 
 const defaultScale = (w: number, h: number, target: number): number =>
@@ -216,59 +274,32 @@ export const renderView = (
   const H = h * scale;
   guardSize(W, H, scale);
   const out = new Uint8Array(W * H * 4);
-  const rowBytes = W * 4;
   const cell = Math.max(2, scale >> 1);
-  const cols = checker && !background ? checkerColumns(W, cell) : null;
+  const target: BlockTarget = {
+    cell,
+    checker,
+    cols: checker && !background ? checkerColumns(W, cell) : null,
+    ground: background,
+    out,
+    rowBytes: W * 4,
+    size: scale,
+  };
   for (let sy = 0; sy < h; sy += 1) {
     const y0 = sy * scale;
     for (let sx = 0; sx < w; sx += 1) {
       const s = (sy * w + sx) * 4;
-      const r = data[s];
-      const g = data[s + 1];
-      const b = data[s + 2];
-      const a = data[s + 3];
       const x0 = sx * scale;
-      if (!checker || a === 255) {
-        fillBlock(out, rowBytes, x0, y0, scale, r, g, b, a);
-      } else if (background) {
-        const inv = 255 - a;
-        fillBlock(
-          out,
-          rowBytes,
-          x0,
-          y0,
-          scale,
-          Math.round((r * a + background[0] * inv) / 255),
-          Math.round((g * a + background[1] * inv) / 255),
-          Math.round((b * a + background[2] * inv) / 255),
-          255
-        );
-      } else if (cols) {
-        const inv = 255 - a;
-        const r0 = a === 0 ? 204 : Math.round((r * a + 204 * inv) / 255);
-        const g0 = a === 0 ? 204 : Math.round((g * a + 204 * inv) / 255);
-        const b0 = a === 0 ? 204 : Math.round((b * a + 204 * inv) / 255);
-        const r1 = a === 0 ? 255 : Math.round((r * a + 255 * inv) / 255);
-        const g1 = a === 0 ? 255 : Math.round((g * a + 255 * inv) / 255);
-        const b1 = a === 0 ? 255 : Math.round((b * a + 255 * inv) / 255);
-        fillCheckerBlock(
-          out,
-          rowBytes,
-          cols,
-          x0,
-          y0,
-          x0,
-          y0,
-          scale,
-          cell,
-          r0,
-          g0,
-          b0,
-          r1,
-          g1,
-          b1
-        );
-      }
+      drawScaledPixel(
+        target,
+        x0,
+        y0,
+        x0,
+        y0,
+        data[s],
+        data[s + 1],
+        data[s + 2],
+        data[s + 3]
+      );
     }
   }
   return {
@@ -278,26 +309,6 @@ export const renderView = (
     width: W,
   };
 };
-
-export const CRITIQUE_PANELS: readonly CritiquePanel[] = [
-  "color",
-  "gray",
-  "silhouette",
-  "deutan",
-  "1x",
-];
-const SHEET_GAP = 4;
-const SHEET_BACKGROUND: readonly number[] = [96, 96, 104, 255];
-// Machado et al. 2009, deuteranopia at full severity, applied to linear light.
-const DEUTAN: readonly Rgb[] = [
-  [0.367322, 0.860646, -0.227968],
-  [0.280085, 0.672501, 0.047413],
-  [-0.01182, 0.04294, 0.968881],
-];
-const toLinear = (v: number): number =>
-  v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-const fromLinear = (v: number): number =>
-  v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
 
 const deutanRgb = (r: number, g: number, b: number): Rgb => {
   const lr = toLinear(r / 255);
@@ -359,8 +370,15 @@ const drawPanel = (
   const ground = background
     ? shadePanel(kind, background[0], background[1], background[2], deutanCache)
     : undefined;
-  const cols =
-    kind === "silhouette" || ground ? null : checkerColumns(w * s, cell);
+  const target: BlockTarget = {
+    cell,
+    checker: true,
+    cols: kind === "silhouette" || ground ? null : checkerColumns(w * s, cell),
+    ground,
+    out,
+    rowBytes,
+    size: s,
+  };
   for (let sy = 0; sy < h; sy += 1) {
     const py = sy * s;
     const dstTop = SHEET_GAP + py;
@@ -381,53 +399,7 @@ const drawPanel = (
         data[i + 2],
         deutanCache
       );
-      if (a === 255) {
-        fillBlock(
-          out,
-          rowBytes,
-          dstLeft,
-          dstTop,
-          s,
-          Math.round(pr),
-          Math.round(pg),
-          Math.round(pb),
-          255
-        );
-      } else if (ground) {
-        const cover = a / 255;
-        const inv = 1 - cover;
-        fillBlock(
-          out,
-          rowBytes,
-          dstLeft,
-          dstTop,
-          s,
-          Math.round(pr * cover + ground[0] * inv),
-          Math.round(pg * cover + ground[1] * inv),
-          Math.round(pb * cover + ground[2] * inv),
-          255
-        );
-      } else if (cols) {
-        const cover = a / 255;
-        const inv = 1 - cover;
-        fillCheckerBlock(
-          out,
-          rowBytes,
-          cols,
-          px,
-          py,
-          dstLeft,
-          dstTop,
-          s,
-          cell,
-          a === 0 ? 204 : Math.round(pr * cover + 204 * inv),
-          a === 0 ? 204 : Math.round(pg * cover + 204 * inv),
-          a === 0 ? 204 : Math.round(pb * cover + 204 * inv),
-          a === 0 ? 255 : Math.round(pr * cover + 255 * inv),
-          a === 0 ? 255 : Math.round(pg * cover + 255 * inv),
-          a === 0 ? 255 : Math.round(pb * cover + 255 * inv)
-        );
-      }
+      drawScaledPixel(target, px, py, dstLeft, dstTop, pr, pg, pb, a);
     }
   }
 };
@@ -486,8 +458,7 @@ export const critiqueSheet = (
   };
 };
 
-/** Frames left to right, `gap` transparent columns apart, tops aligned. */
-export const frameStrip = (frames: Canvas[], gap = 1): Canvas => {
+const frameStrip = (frames: readonly Canvas[], gap = 1): Canvas => {
   const width = frames.reduce(
     (sum, f) => sum + f.width,
     gap * (frames.length - 1)
@@ -507,8 +478,7 @@ export const frameStrip = (frames: Canvas[], gap = 1): Canvas => {
   return { data, height, width };
 };
 
-/** Nearest-neighbour upscale by a whole factor. */
-export const upscale = (cv: Canvas, scale: number): Canvas => {
+const upscale = (cv: Canvas, scale: number): Canvas => {
   if (scale === 1) {
     return cv;
   }
@@ -534,8 +504,7 @@ export const upscale = (cv: Canvas, scale: number): Canvas => {
   return { data, height: H, width: W };
 };
 
-/** Same-size frames in a grid, `columns` per row, left to right then top to bottom. */
-export const gridSheet = (
+const gridSheet = (
   frames: Canvas[],
   columns: number
 ): { sheet: Canvas; cells: [x: number, y: number][] } => {
@@ -559,487 +528,103 @@ export const gridSheet = (
   return { cells, sheet: { data, height, width } };
 };
 
-const PNG_CHANNELS = new Map([
-  [0, 1],
-  [2, 3],
-  [3, 1],
-  [4, 2],
-  [6, 4],
-]);
-
-const paeth = (a: number, b: number, c: number): number => {
-  const p = a + b - c;
-  const pa = Math.abs(p - a);
-  const pb = Math.abs(p - b);
-  const pc = Math.abs(p - c);
-  if (pa <= pb && pa <= pc) {
-    return a;
-  }
-  return pb <= pc ? b : c;
+/** Renders one or more flattened frames as a single PNG view or critique sheet. */
+export const renderSpriteView = (
+  frames: readonly Canvas[],
+  o: {
+    scale?: number;
+    critique?: boolean;
+    background?: string;
+  } = {}
+): Rendered => {
+  const cv = frames.length === 1 ? frames[0] : frameStrip(frames);
+  const rgb = o.background === undefined ? undefined : parseHex(o.background);
+  const background = rgb && ([rgb[0], rgb[1], rgb[2]] as const);
+  return o.critique
+    ? critiqueSheet(cv, { background, scale: o.scale })
+    : renderView(cv, { background, scale: o.scale });
 };
 
-const unfilterSub = (
-  raw: Uint8Array,
-  line: number,
-  px: Uint8Array,
-  o: number,
-  stride: number,
-  bpp: number
-): void => {
-  for (let i = 0; i < bpp; i += 1) {
-    px[o + i] = raw[line + i];
+const wholeOption = (name: string, value: unknown, fallback: number): number =>
+  value === undefined ? fallback : wholeNumber(`export: ${name}`, value);
+
+const exportRange = (
+  frameCount: number,
+  tags: readonly ExportTag[],
+  tag: unknown
+): { from: number; to: number } => {
+  if (tag === undefined) {
+    return { from: 0, to: frameCount - 1 };
   }
-  for (let i = bpp; i < stride; i += 1) {
-    px[o + i] = (raw[line + i] + px[o + i - bpp]) & 0xff;
+  const found = tags.find((t) => t.name === tag);
+  if (!found) {
+    const names = tags.map((t) => t.name);
+    throw new Error(
+      `export: no tag '${String(tag)}'. Tags: ${names.join(", ") || "none"}.`
+    );
   }
+  return found;
 };
 
-const unfilterAvg = (
-  raw: Uint8Array,
-  line: number,
-  px: Uint8Array,
-  o: number,
-  prev: number,
-  stride: number,
-  bpp: number,
-  y: number
-): void => {
-  if (y === 0) {
-    for (let i = 0; i < bpp; i += 1) {
-      px[o + i] = raw[line + i];
-    }
-    for (let i = bpp; i < stride; i += 1) {
-      px[o + i] = (raw[line + i] + (px[o + i - bpp] >> 1)) & 0xff;
-    }
-    return;
+/** Builds pure sprite-sheet (PNG + JSON) and/or looping GIF89a buffers from flattened frames. */
+export const buildSpriteExport = ({
+  frames: allFrames,
+  durations,
+  tags,
+  sheetImageName = "sheet.png",
+  scale: rawScale,
+  tag,
+  sheet = true,
+  gif = false,
+  columns: rawColumns,
+}: ExportInput): BuiltExport => {
+  if (!sheet && !gif) {
+    throw new Error("export: sheet and gif are both false; nothing to write.");
   }
-  for (let i = 0; i < bpp; i += 1) {
-    px[o + i] = (raw[line + i] + (px[prev + i] >> 1)) & 0xff;
-  }
-  for (let i = bpp; i < stride; i += 1) {
-    px[o + i] =
-      (raw[line + i] + ((px[o + i - bpp] + px[prev + i]) >> 1)) & 0xff;
-  }
-};
-
-const unfilterPaeth = (
-  raw: Uint8Array,
-  line: number,
-  px: Uint8Array,
-  o: number,
-  prev: number,
-  stride: number,
-  bpp: number,
-  y: number
-): void => {
-  if (y === 0) {
-    unfilterSub(raw, line, px, o, stride, bpp);
-    return;
-  }
-  for (let i = 0; i < bpp; i += 1) {
-    px[o + i] = (raw[line + i] + px[prev + i]) & 0xff;
-  }
-  for (let i = bpp; i < stride; i += 1) {
-    px[o + i] =
-      (raw[line + i] +
-        paeth(px[o + i - bpp], px[prev + i], px[prev + i - bpp])) &
-      0xff;
-  }
-};
-
-/** Reverses the per-row filters; returns the packed pixel bytes, `stride` per row. */
-const unfilter = (
-  raw: Uint8Array,
-  height: number,
-  stride: number,
-  bpp: number
-): Uint8Array => {
-  if (raw.length < (stride + 1) * height) {
-    throw new Error("PNG image data is truncated.");
-  }
-  const px = new Uint8Array(stride * height);
-  for (let y = 0; y < height; y += 1) {
-    const filter = raw[y * (stride + 1)];
-    const line = y * (stride + 1) + 1;
-    const o = y * stride;
-    const prev = o - stride;
-    switch (filter) {
-      case 0: {
-        px.set(raw.subarray(line, line + stride), o);
-        break;
-      }
-      case 1: {
-        unfilterSub(raw, line, px, o, stride, bpp);
-        break;
-      }
-      case 2: {
-        if (y === 0) {
-          px.set(raw.subarray(line, line + stride), o);
-        } else {
-          for (let i = 0; i < stride; i += 1) {
-            px[o + i] = (raw[line + i] + px[prev + i]) & 0xff;
-          }
-        }
-        break;
-      }
-      case 3: {
-        unfilterAvg(raw, line, px, o, prev, stride, bpp, y);
-        break;
-      }
-      case 4: {
-        unfilterPaeth(raw, line, px, o, prev, stride, bpp, y);
-        break;
-      }
-      default: {
-        throw new Error(`PNG row uses unknown filter type ${filter}.`);
-      }
-    }
-  }
-  return px;
-};
-
-interface PngChunks {
-  header: Buffer;
-  plte: Buffer;
-  trns: Buffer;
-  idat: Buffer;
-}
-
-const pngChunks = (buf: Buffer): PngChunks => {
-  if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIGNATURE)) {
-    throw new Error("Not a PNG file.");
-  }
-  const found: Record<string, Buffer> = {};
-  const idat: Buffer[] = [];
-  for (let at = 8; at + 8 <= buf.length;) {
-    const len = buf.readUInt32BE(at);
-    const type = buf.toString("ascii", at + 4, at + 8);
-    const body = buf.subarray(at + 8, at + 8 + len);
-    at += 12 + len;
-    if (type === "IDAT") {
-      idat.push(body);
-    } else if (type === "IEND") {
-      break;
-    } else {
-      found[type] ??= body;
-    }
-  }
-  const header = found.IHDR;
-  if (header?.length !== 13 || !idat.length) {
-    throw new Error("PNG file has no IHDR or IDAT chunk.");
-  }
-  return {
-    header,
-    idat: Buffer.concat(idat),
-    plte: found.PLTE ?? Buffer.alloc(0),
-    trns: found.tRNS ?? Buffer.alloc(0),
-  };
-};
-
-const decodePalettePixels = (
-  px: Uint8Array,
-  width: number,
-  height: number,
-  stride: number,
-  depth: number,
-  plte: Buffer,
-  trns: Buffer
-): Uint8Array => {
-  const data = new Uint8Array(width * height * 4);
-  const mask = (1 << depth) - 1;
-  for (let y = 0; y < height; y += 1) {
-    const row = y * stride;
-    for (let x = 0; x < width; x += 1) {
-      const bit = x * depth;
-      const v = (px[row + (bit >> 3)] >> (8 - depth - (bit & 7))) & mask;
-      if (v * 3 + 2 >= plte.length) {
-        throw new Error(
-          `PNG pixel uses palette index ${v}, outside its palette.`
-        );
-      }
-      const o = (y * width + x) * 4;
-      data[o] = plte[v * 3];
-      data[o + 1] = plte[v * 3 + 1];
-      data[o + 2] = plte[v * 3 + 2];
-      data[o + 3] = v < trns.length ? trns[v] : 255;
-    }
-  }
-  return data;
-};
-
-const decodeGrayPixels = (
-  px: Uint8Array,
-  width: number,
-  height: number,
-  stride: number,
-  hasAlpha: boolean,
-  trns: Buffer
-): Uint8Array => {
-  const data = new Uint8Array(width * height * 4);
-  const channels = hasAlpha ? 2 : 1;
-  const key = trns.length >= 2 ? trns.readUInt16BE(0) : -1;
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const o = (y * width + x) * 4;
-      const i = y * stride + x * channels;
-      const v = px[i];
-      data[o] = v;
-      data[o + 1] = v;
-      data[o + 2] = v;
-      if (hasAlpha) {
-        data[o + 3] = px[i + 1];
-      } else {
-        data[o + 3] = v === key ? 0 : 255;
-      }
-    }
-  }
-  return data;
-};
-
-const decodeRgbPixels = (
-  px: Uint8Array,
-  width: number,
-  height: number,
-  stride: number,
-  trns: Buffer
-): Uint8Array => {
-  const data = new Uint8Array(width * height * 4);
-  const [keyR, keyG, keyB] =
-    trns.length >= 6
-      ? [trns.readUInt16BE(0), trns.readUInt16BE(2), trns.readUInt16BE(4)]
-      : [-1, -1, -1];
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const o = (y * width + x) * 4;
-      const i = y * stride + x * 3;
-      const r = px[i];
-      const g = px[i + 1];
-      const b = px[i + 2];
-      data[o] = r;
-      data[o + 1] = g;
-      data[o + 2] = b;
-      data[o + 3] = r === keyR && g === keyG && b === keyB ? 0 : 255;
-    }
-  }
-  return data;
-};
-
-/**
- * Decodes a PNG to RGBA: colour types 0, 2, 4 and 6 at bit depth 8, and palette PNGs at depth 1, 2, 4 or 8.
- * tRNS transparency is applied. Interlaced and 16-bit PNGs are refused.
- */
-export const decodePng = (file: Uint8Array): Canvas => {
-  const { header, plte, trns, idat } = pngChunks(
-    Buffer.from(file.buffer, file.byteOffset, file.byteLength)
+  const scale = wholeOption("scale", rawScale, 1);
+  const { from, to } = exportRange(allFrames.length, tags, tag);
+  const indices = Array.from({ length: to - from + 1 }, (_, n) => from + n);
+  const [{ width: baseW, height: baseH }] = allFrames;
+  // Every scaled frame is held at once, so the limit applies to all of them together.
+  guardImage(
+    `${indices.length} frames at ${scale}x`,
+    baseW * scale,
+    baseH * scale * indices.length
   );
-  const width = header.readUInt32BE(0);
-  const height = header.readUInt32BE(4);
-  const depth = header.readUInt8(8);
-  const type = header.readUInt8(9);
-  const interlace = header.readUInt8(12);
-  const channels = PNG_CHANNELS.get(type);
-  if (channels === undefined) {
-    throw new Error(`PNG colour type ${type} is not supported.`);
-  }
-  if (interlace !== 0) {
-    throw new Error(
-      "Interlaced PNGs are not supported; save the image without interlacing."
-    );
-  }
-  if (type === 3 ? ![1, 2, 4, 8].includes(depth) : depth !== 8) {
-    throw new Error(
-      `PNG bit depth ${depth} is not supported for colour type ${type}; save the image as 8-bit.`
-    );
-  }
-  guardImage("The PNG", width, height);
-  const bits = channels * depth;
-  const stride = Math.ceil((width * bits) / 8);
-  const px = unfilter(
-    inflateSync(idat),
-    height,
-    stride,
-    Math.max(1, bits >> 3)
-  );
-  if (type === 6) {
-    return { data: px, height, width };
-  }
-  if (type === 3) {
-    return {
-      data: decodePalettePixels(px, width, height, stride, depth, plte, trns),
-      height,
-      width,
+  const scaled = indices.map((f) => upscale(allFrames[f], scale));
+  const [{ width, height }] = scaled;
+  const out: BuiltExport = { frames: scaled.length, height, width };
+  if (sheet) {
+    const columns = wholeOption("columns", rawColumns, scaled.length);
+    const { sheet: cv, cells } = gridSheet(scaled, columns);
+    const data = {
+      frames: cells.map(([x, y], n) => ({
+        duration: durations[indices[n]],
+        h: height,
+        w: width,
+        x,
+        y,
+      })),
+      image: sheetImageName,
+      scale,
+      size: { h: cv.height, w: cv.width },
+      tags: tags
+        .filter((t) => t.from >= from && t.to <= to)
+        .map((t) => ({
+          direction: t.direction,
+          from: t.from - from,
+          name: t.name,
+          to: t.to - from,
+        })),
     };
+    out.sheetPng = encodePng(cv.width, cv.height, cv.data);
+    out.sheetJson = `${JSON.stringify(data, null, 2)}\n`;
   }
-  if (type === 0 || type === 4) {
-    return {
-      data: decodeGrayPixels(px, width, height, stride, type === 4, trns),
-      height,
-      width,
-    };
-  }
-  return {
-    data: decodeRgbPixels(px, width, height, stride, trns),
-    height,
-    width,
-  };
-};
-
-const MAX_LZW_CODE = 4096;
-const LZW_HT_SIZE = 8192;
-const LZW_HT_MASK = LZW_HT_SIZE - 1;
-
-/** GIF's variable-width LZW, packed least significant bit first. */
-const lzw = (indices: Uint8Array, minCodeSize: number): Uint8Array => {
-  const clear = 1 << minCodeSize;
-  const end = clear + 1;
-  let bytes = new Uint8Array(Math.max(256, indices.length));
-  let byteLen = 0;
-  let acc = 0;
-  let accBits = 0;
-  let size = minCodeSize + 1;
-  let next = end + 1;
-  const keys = new Int32Array(LZW_HT_SIZE).fill(-1);
-  const vals = new Uint16Array(LZW_HT_SIZE);
-  const pushByte = (b: number): void => {
-    if (byteLen === bytes.length) {
-      const grown = new Uint8Array(bytes.length * 2);
-      grown.set(bytes);
-      bytes = grown;
-    }
-    bytes[byteLen] = b;
-    byteLen += 1;
-  };
-  const write = (code: number): void => {
-    acc |= code << accBits;
-    accBits += size;
-    while (accBits >= 8) {
-      pushByte(acc & 0xff);
-      acc >>>= 8;
-      accBits -= 8;
-    }
-  };
-  // The width grows as soon as the next code needs it, as giflib does, so the decoder stays in step.
-  const output = (code: number): void => {
-    write(code);
-    if (next >= 1 << size && size < 12) {
-      size += 1;
-    }
-  };
-  write(clear);
-  let [prefix] = indices;
-  for (let i = 1; i < indices.length; i += 1) {
-    const k = indices[i];
-    const key = (prefix << 8) | k;
-    let slot = ((prefix << 5) ^ k) & LZW_HT_MASK;
-    let hit = -1;
-    while (keys[slot] !== -1) {
-      if (keys[slot] === key) {
-        hit = vals[slot];
-        break;
-      }
-      slot = (slot + 1) & LZW_HT_MASK;
-    }
-    if (hit !== -1) {
-      prefix = hit;
-      continue;
-    }
-    output(prefix);
-    if (next === MAX_LZW_CODE) {
-      write(clear);
-      keys.fill(-1);
-      next = end + 1;
-      size = minCodeSize + 1;
-    } else {
-      keys[slot] = key;
-      vals[slot] = next;
-      next += 1;
-    }
-    prefix = k;
-  }
-  output(prefix);
-  write(end);
-  if (accBits > 0) {
-    pushByte(acc & 0xff);
-  }
-  return bytes.subarray(0, byteLen);
-};
-
-const subBlocks = (data: Uint8Array): Buffer => {
-  const parts: Uint8Array[] = [];
-  for (let at = 0; at < data.length; at += 255) {
-    const part = data.subarray(at, at + 255);
-    parts.push(Uint8Array.of(part.length), part);
-  }
-  parts.push(Uint8Array.of(0));
-  return Buffer.concat(parts);
-};
-
-const u16 = (n: number): Buffer => {
-  const b = Buffer.alloc(2);
-  b.writeUInt16LE(n);
-  return b;
-};
-
-/**
- * A looping GIF89a of same-size frames; `delays` in centiseconds, one per frame. Index 0 is transparent; pixels
- * with alpha below 128 use it and the rest keep their RGB, so at most 255 distinct colours fit.
- */
-export const encodeGif = (frames: Canvas[], delays: number[]): Buffer => {
-  const [{ width, height }] = frames;
-  const index = new Map<number, number>();
-  const indexed = frames.map((f) => {
-    const out = new Uint8Array(width * height);
-    for (let p = 0; p < out.length; p += 1) {
-      const i = p * 4;
-      if (f.data[i + 3] < 128) {
-        continue;
-      }
-      const rgb = (f.data[i] << 16) | (f.data[i + 1] << 8) | f.data[i + 2];
-      let n = index.get(rgb);
-      if (n === undefined) {
-        n = index.size + 1;
-        index.set(rgb, n);
-      }
-      out[p] = n;
-    }
-    return out;
-  });
-  if (index.size > 255) {
-    throw new Error(
-      `The frames use ${index.size} colours; a GIF holds at most 255 plus transparent. Use fewer colours or export only the sheet.`
+  if (gif) {
+    const delays = indices.map((f) =>
+      Math.max(2, Math.round(durations[f] / 10))
     );
+    out.gif = encodeGif(scaled, delays);
   }
-  const bits = Math.max(1, Math.ceil(Math.log2(index.size + 1)));
-  const table = Buffer.alloc(3 << bits);
-  for (const [rgb, n] of index) {
-    table.set([rgb >> 16, (rgb >> 8) & 0xff, rgb & 0xff], n * 3);
-  }
-  const minCodeSize = Math.max(2, bits);
-  const parts: Uint8Array[] = [
-    Buffer.from("GIF89a", "ascii"),
-    u16(width),
-    u16(height),
-    Uint8Array.of(0x80 | ((bits - 1) << 4) | (bits - 1), 0, 0),
-    table,
-    Uint8Array.of(0x21, 0xff, 0x0b),
-    Buffer.from("NETSCAPE2.0", "ascii"),
-    // Loop forever.
-    Uint8Array.of(3, 1, 0, 0, 0),
-  ];
-  for (const [n, pixels] of indexed.entries()) {
-    parts.push(
-      // Disposal 2 clears each frame before the next, so transparent pixels never show the previous frame.
-      Uint8Array.of(0x21, 0xf9, 4, (2 << 2) | 1),
-      u16(delays[n]),
-      Uint8Array.of(0, 0, 0x2c),
-      u16(0),
-      u16(0),
-      u16(width),
-      u16(height),
-      Uint8Array.of(0, minCodeSize),
-      subBlocks(lzw(pixels, minCodeSize))
-    );
-  }
-  parts.push(Uint8Array.of(0x3b));
-  return Buffer.concat(parts);
+  return out;
 };

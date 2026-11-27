@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-// Tailnet access: a daemon started with ASEPRITE_MCP_TAILNET_* admits requests that `tailscale serve` forwards
-// for allowed users, and the pure config functions behind `serve --tailscale`.
-import { test, before, after } from "node:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import nodePath from "node:path";
+// Tailnet access: in-process daemon tests for `tailscale serve` request admission and inline images,
+// plus CLI validation tests and pure config functions behind `serve --tailscale`.
+import { after, before, test } from "node:test";
 
+import { startDaemon } from "../src/daemon.ts";
+import type { Daemon } from "../src/daemon.ts";
+import { createWorkspace } from "../src/files.ts";
+import type { Link } from "../src/link.ts";
 import {
   resolveTailnet,
   tailnetEnvComplete,
@@ -15,21 +21,58 @@ import {
   serve,
   waitForHealth,
 } from "./fixtures/daemon-env.ts";
+import * as fakeProgram from "./fixtures/fake-program.ts";
 
 const TAILNET_HOST = "machine.example-tailnet.ts.net:9124";
 const ALICE = "alice@example.com";
-let ctx: Awaited<ReturnType<typeof isolatedEnv>>;
+
+const disconnectedLink = (): Link => ({
+  request: () => Promise.reject(new Error("not connected")),
+  status: () => ({
+    connected: false,
+    error: null,
+    extension: null,
+    port: 0,
+  }),
+});
+
+let dir: string;
+let daemon: Daemon;
+let base: string;
 
 before(async () => {
-  ctx = await isolatedEnv();
-  serve({
-    ...ctx.env,
-    ASEPRITE_MCP_TAILNET_HOST: TAILNET_HOST,
-    ASEPRITE_MCP_TAILNET_USERS: `${ALICE}, bob@example.com`,
+  dir = mkdtempSync(nodePath.join(tmpdir(), "mcp-tailnet-"));
+  const workspace = createWorkspace({
+    allowedDirs: [dir],
+    autosaveDir: null,
+    libDir: null,
+    palettesFile: nodePath.join(dir, "palettes.json"),
+    spritesDir: dir,
+    tokenEnv: "t".repeat(48),
+    tokenFile: nodePath.join(dir, "token"),
+    viewsDir: nodePath.join(dir, "views"),
   });
-  await waitForHealth(ctx.base);
+  const started = await startDaemon({
+    httpPort: 0,
+    link: disconnectedLink(),
+    program: fakeProgram,
+    tailnet: {
+      host: TAILNET_HOST,
+      users: new Set([ALICE, "bob@example.com"]),
+    },
+    version: "0.0.0",
+    workspace,
+    wsPort: 0,
+  });
+  assert.ok(started);
+  daemon = started;
+  base = `http://127.0.0.1:${daemon.port}`;
 });
-after(() => ctx.cleanup());
+
+after(async () => {
+  await daemon.close().catch(() => null);
+  rmSync(dir, { force: true, recursive: true });
+});
 
 // What `tailscale serve` adds when it forwards a request from a tailnet user.
 const viaTailscale = (login?: string): Record<string, string> => ({
@@ -45,7 +88,7 @@ const raw = (
   path: string,
   headers: Record<string, string>,
   body?: unknown
-) => rawRequest(ctx.httpPort, method, path, headers, body);
+) => rawRequest(daemon.port, method, path, headers, body);
 
 interface Block {
   type: string;
@@ -86,7 +129,7 @@ test("an allowed tailnet user can execute and gets image blocks without ?images=
 });
 
 test("loopback callers still get paths only unless they ask for inline images", async () => {
-  const content = await executeView({ host: `127.0.0.1:${ctx.httpPort}` });
+  const content = await executeView({ host: `127.0.0.1:${daemon.port}` });
   assert.deepEqual(
     content.map((b) => b.type),
     ["text"]
@@ -135,21 +178,24 @@ test("a tailnet MCP call from a foreign Origin is rejected", async () => {
 });
 
 test("serve with tailnet access fails when an older daemon already holds the port", async () => {
+  const solo = await isolatedEnv();
   const { exited } = serve({
-    ...ctx.env,
+    ...solo.env,
+    ASEPRITE_MCP_HTTP_PORT: String(daemon.port),
     ASEPRITE_MCP_TAILNET_HOST: TAILNET_HOST,
     ASEPRITE_MCP_TAILNET_USERS: ALICE,
   });
   const { code, stderr } = await exited;
+  await solo.cleanup();
   assert.equal(code, 1);
   assert.match(stderr, /aseprite-mcp stop/u);
-  await waitForHealth(ctx.base);
+  await waitForHealth(base);
 });
 
 test("a proxied request cannot pass as loopback by sending a loopback Host", async () => {
   const status = await health({
     ...viaTailscale("mallory@example.com"),
-    host: `127.0.0.1:${ctx.httpPort}`,
+    host: `127.0.0.1:${daemon.port}`,
   });
   assert.equal(status, 403);
 });
@@ -157,7 +203,7 @@ test("a proxied request cannot pass as loopback by sending a loopback Host", asy
 test("tailnet callers cannot stop the daemon", async () => {
   const res = await raw("POST", "/shutdown", viaTailscale(ALICE));
   assert.equal(res.status, 403);
-  await waitForHealth(ctx.base);
+  await waitForHealth(base);
 });
 
 test("serve refuses to start with only one of the tailnet variables", async () => {

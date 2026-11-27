@@ -1,13 +1,10 @@
-// Colour text, OKLCH maths for shade ramps, and the named-palette file.
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import path from "node:path";
-
+// Pure colour text and OKLCH maths for shade ramps.
 export type Rgba = [number, number, number, number];
 export type Oklch = [number, number, number];
 export type Palette = Record<string, string>;
 
 // "." and " " mean "leave the pixel alone" in pixel maps, so a palette may not use them as keys.
-const RESERVED_KEYS = new Set([".", " "]);
+export const RESERVED_KEYS = new Set([".", " "]);
 
 /** Any of #rgb, #rgba, #rrggbb, #rrggbbaa (the # is optional) to "rrggbbaa" in lower case. */
 export const normHex = (c: unknown): string => {
@@ -41,9 +38,9 @@ export const formatHex = ([r, g, b, a = 255]: readonly number[]): string =>
   `#${hex(r)}${hex(g)}${hex(b)}${a === 255 ? "" : hex(a)}`;
 
 // Oklab per Björn Ottosson, with sRGB transfer curves.
-const toLinear = (v: number): number =>
+export const toLinear = (v: number): number =>
   v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-const fromLinear = (v: number): number =>
+export const fromLinear = (v: number): number =>
   v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
 
 /** [L 0..1, chroma, hue in degrees 0..360) */
@@ -160,59 +157,4 @@ export const ramp = (
   }
   const colors = rampColors(base, chars.length, hueShift);
   return Object.fromEntries(chars.map((k, i) => [k, colors[i]]));
-};
-
-/** The palettes file: { name: { key: colour } }. A missing file is an empty set. */
-export const loadPalettes = async (
-  file: string
-): Promise<Record<string, Palette>> => {
-  const text = await readFile(file, "utf-8").catch((error) => {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-    return null;
-  });
-  if (text === null) {
-    return {};
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`The palettes file ${file} is not valid JSON.`);
-  }
-};
-
-export const loadPalette = async (
-  file: string,
-  name: string
-): Promise<Palette> => {
-  const all = await loadPalettes(file);
-  if (!Object.hasOwn(all, name)) {
-    throw new Error(
-      `No saved palette '${name}'. Saved: ${Object.keys(all).join(", ") || "none"}`
-    );
-  }
-  return all[name];
-};
-
-export const savePalette = async (
-  file: string,
-  name: string,
-  colors: Palette
-): Promise<void> => {
-  const clean: Palette = {};
-  for (const [key, color] of Object.entries(colors)) {
-    if ([...key].length !== 1 || RESERVED_KEYS.has(key)) {
-      throw new Error(
-        `${JSON.stringify(key)} cannot be palette keys: use one character other than "." and space.`
-      );
-    }
-    clean[key] = formatHex(parseHex(color));
-  }
-  const all = await loadPalettes(file);
-  all[name] = clean;
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`);
-  await rename(tmp, file);
 };
