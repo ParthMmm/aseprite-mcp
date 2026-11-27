@@ -2,3 +2,6 @@ node_modules
 dist/
 .DS_Store
 *.log
+.agents/skills/ultracite/
+.claude/skills/ultracite
+skills-lock.json
