@@ -1,9 +1,10 @@
-// In-memory Aseprite behind the Link interface: RGB sprites only, full-canvas cel bytes, one undo step per
-// applied commit, compare-and-swap per written cel. Enough for program.test.ts; the real Lua is in extension/.
-import { moveCanvas } from "../src/draft.ts";
-import type { Op, Tag } from "../src/draft.ts";
+// In-memory Aseprite behind the Link seam: RGB, indexed, and gray sprites, full-canvas raw sprite-mode bytes,
+// one undo step per applied commit, compare-and-swap per written cel, and configurable extension version.
 import type { Link, LinkReply, LinkStatus } from "../src/link.ts";
 import type { Rect } from "../src/raster.ts";
+import { moveCanvas } from "../src/session.ts";
+import type { Op, Tag } from "../src/session.ts";
+import { fromRgba, toRgba } from "../src/wire.ts";
 import type { ColorMode } from "../src/wire.ts";
 
 interface FakeLayer {
@@ -27,7 +28,10 @@ interface State {
   layers: FakeLayer[];
   frames: { duration: number }[];
   tags: Tag[];
+  /** Stored as raw sprite-mode bytes (4 bpp rgb, 2 bpp gray, 1 bpp indexed). */
   cels: Map<string, Uint8Array>;
+  /** Optional link groups: cel key -> canonical frame number in that layer. */
+  links: Map<string, number>;
 }
 
 interface Step {
@@ -54,6 +58,10 @@ interface Reply {
   blobs?: Uint8Array[];
 }
 
+export interface FakeLinkOptions {
+  extension?: string;
+}
+
 export interface FakeLink extends Link {
   artist: (
     id: number,
@@ -64,13 +72,57 @@ export interface FakeLink extends Link {
   beforeRequest: ((cmd: string, args: object) => unknown) | null;
   log: string[];
   sprite: (id: number) => Entry;
+  setExtension: (version: string) => void;
 }
+
+const bppOf = (mode: ColorMode): number => {
+  if (mode === "indexed") {
+    return 1;
+  }
+  return mode === "gray" ? 2 : 4;
+};
+
+const blankRaw = (
+  s: Pick<State, "width" | "height" | "colorMode" | "transparentIndex">
+): Uint8Array => {
+  const bytes = new Uint8Array(s.width * s.height * bppOf(s.colorMode));
+  if (s.colorMode === "indexed" && s.transparentIndex !== 0) {
+    bytes.fill(s.transparentIndex);
+  }
+  return bytes;
+};
+
+const hasVisible = (bytes: Uint8Array, s: State): boolean => {
+  if (s.colorMode === "rgb") {
+    for (let i = 3; i < bytes.length; i += 4) {
+      if (bytes[i] !== 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (s.colorMode === "gray") {
+    for (let i = 1; i < bytes.length; i += 2) {
+      if (bytes[i] !== 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const idx of bytes) {
+    if (idx !== s.transparentIndex) {
+      return true;
+    }
+  }
+  return false;
+};
 
 const clone = (s: State): State => ({
   ...s,
   cels: new Map([...s.cels].map(([k, v]) => [k, Uint8Array.from(v)])),
   frames: s.frames.map((f) => ({ ...f })),
   layers: s.layers.map((l) => ({ ...l })),
+  links: new Map(s.links),
   palette: [...s.palette],
   tags: s.tags.map((t) => ({ ...t })),
 });
@@ -102,6 +154,29 @@ const renameLayer = (s: State, l: FakeLayer, rename: string) => {
     s.cels.delete(k);
     s.cels.set(to + k.slice(from.length), v);
   }
+};
+
+const resizeState = (
+  s: State,
+  op: Extract<Op, { op: "canvas.resize" }>
+): void => {
+  const fill = s.colorMode === "indexed" ? s.transparentIndex : 0;
+  for (const [k, v] of s.cels.entries().toArray()) {
+    const moved = moveCanvas(
+      v,
+      [s.width, s.height],
+      [op.width, op.height],
+      [op.x, op.y],
+      fill
+    );
+    if (hasVisible(moved, s)) {
+      s.cels.set(k, moved);
+    } else {
+      s.cels.delete(k);
+    }
+  }
+  s.width = op.width;
+  s.height = op.height;
 };
 
 const applyOp = (s: State, op: Op) => {
@@ -182,21 +257,7 @@ const applyOp = (s: State, op: Op) => {
       return;
     }
     case "canvas.resize": {
-      for (const [k, v] of s.cels.entries().toArray()) {
-        const moved = moveCanvas(
-          v,
-          [s.width, s.height],
-          [op.width, op.height],
-          [op.x, op.y]
-        );
-        if (moved.some((_, i) => i % 4 === 3 && moved[i] !== 0)) {
-          s.cels.set(k, moved);
-        } else {
-          s.cels.delete(k);
-        }
-      }
-      s.width = op.width;
-      s.height = op.height;
+      resizeState(s, op);
       return;
     }
     default: {
@@ -205,7 +266,10 @@ const applyOp = (s: State, op: Op) => {
   }
 };
 
-export const createFakeLink = (): FakeLink => {
+export const createFakeLink = ({
+  extension: initialExtension = "0.3.0",
+}: FakeLinkOptions = {}): FakeLink => {
+  let extension = initialExtension;
   const sprites = new Map<number, Entry>();
   let nextId = 1;
   let active: number | null = null;
@@ -277,7 +341,7 @@ export const createFakeLink = (): FakeLink => {
         }
         throw error;
       }
-      const blank = new Uint8Array(next.width * next.height * 4);
+      const blank = blankRaw(next);
       const conflicts: { write: number; blob?: number }[] = [];
       const current: Uint8Array[] = [];
       for (const [i, w] of writes.entries()) {
@@ -297,10 +361,11 @@ export const createFakeLink = (): FakeLink => {
         };
       }
       for (const w of writes) {
+        const k = key(w.layer, w.frame);
         if (w.next === null) {
-          next.cels.delete(key(w.layer, w.frame));
+          next.cels.delete(k);
         } else {
-          next.cels.set(key(w.layer, w.frame), Uint8Array.from(blobs[w.next]));
+          next.cels.set(k, Uint8Array.from(blobs[w.next]));
         }
       }
       entry.undo.push({ label: `MCP: ${label}`, state: entry.state });
@@ -318,6 +383,9 @@ export const createFakeLink = (): FakeLink => {
       steps?: number;
     }): Reply {
       const entry = need(sprite);
+      if (sprite !== undefined) {
+        active = entry.state.id;
+      }
       for (let i = 0; i < steps; i += 1) {
         const [from, to] =
           action === "undo"
@@ -341,9 +409,6 @@ export const createFakeLink = (): FakeLink => {
       height: number;
       colorMode?: ColorMode;
     }): Reply {
-      if (colorMode !== "rgb") {
-        throw new Error("fake link: rgb sprites only");
-      }
       const id = nextId;
       nextId += 1;
       const state: State = {
@@ -361,8 +426,9 @@ export const createFakeLink = (): FakeLink => {
             visible: true,
           },
         ],
+        links: new Map(),
         name: `Sprite-${id}`,
-        palette: [],
+        palette: colorMode === "indexed" ? ["#00000000"] : [],
         path: null,
         selection: null,
         tags: [],
@@ -389,14 +455,16 @@ export const createFakeLink = (): FakeLink => {
     },
     snapshot({ sprite }: { sprite?: number | string }): Reply {
       const { state: s } = need(sprite);
-      const blobs = [];
+      const blobs: Uint8Array[] = [];
       const cels = [];
       for (const [k, bytes] of s.cels) {
         const at = k.lastIndexOf("@");
+        const linkFrame = s.links.get(k);
         cels.push({
           blob: blobs.length,
           frame: Number(k.slice(at + 1)),
           layer: k.slice(0, at),
+          ...(linkFrame !== undefined && { link: linkFrame }),
         });
         blobs.push(Uint8Array.from(bytes));
       }
@@ -437,21 +505,35 @@ export const createFakeLink = (): FakeLink => {
   };
 
   const link: FakeLink = {
-    /** An artist edit outside any program: changes the cel and records its own undo step. */
+    /** An artist edit outside any program: mutates RGBA view and stores back in the sprite's color mode. */
     artist(id, layer, frame, fn) {
       const entry = byId(id);
       const next = clone(entry.state);
       const k = key(layer, frame);
-      const bytes =
-        next.cels.get(k) ?? new Uint8Array(next.width * next.height * 4);
-      fn(bytes, next.width);
-      next.cels.set(k, bytes);
+      const existing = next.cels.get(k);
+      const rgba = existing
+        ? toRgba(existing, next.colorMode, next.palette, next.transparentIndex)
+        : new Uint8Array(next.width * next.height * 4);
+      fn(rgba, next.width);
+      const encoded = fromRgba(
+        rgba,
+        next.colorMode,
+        next.palette,
+        next.transparentIndex
+      );
+      if (next.colorMode === "indexed" && encoded.missing.length) {
+        next.palette.push(...encoded.missing);
+        next.cels.set(
+          k,
+          fromRgba(rgba, "indexed", next.palette, next.transparentIndex).bytes
+        );
+      } else {
+        next.cels.set(k, encoded.bytes);
+      }
       entry.undo.push({ label: "artist", state: entry.state });
       entry.state = next;
     },
-    /** Called before each request is handled; tests use it to inject an artist edit. */
     beforeRequest: null,
-    /** test helpers */
     log,
     async request<T = unknown>(
       cmd: string,
@@ -475,18 +557,21 @@ export const createFakeLink = (): FakeLink => {
       );
       return { blobs: out, result: result as T };
     },
+    setExtension(version: string) {
+      extension = version;
+    },
     sprite: byId,
     status: (): LinkStatus => ({
       connected: true,
       error: null,
-      extension: "0.3.0",
+      extension,
       port: 9123,
     }),
   };
   return link;
 };
 
-/** RGBA of pixel (x, y) in a full-canvas buffer, or null when the cel does not exist. */
+/** RGBA of pixel (x, y) in a full-canvas RGB buffer, or null when the cel does not exist. */
 export const pixel = (
   bytes: Uint8Array | null | undefined,
   width: number,

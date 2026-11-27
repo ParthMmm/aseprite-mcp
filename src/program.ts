@@ -1,4 +1,4 @@
-// The code-mode runtime: one execute() runs one agent program against per-sprite Drafts, then commits what is
+// The code-mode runtime: one execute() runs one agent program against a SpriteSession, then commits what is
 // left as one undo step per sprite. Globals: sprite, sprites, image, ramp, palette, lib, use, help. Handles are plain objects of
 // closures; mutable state is behind methods because psychoscript copies plain fields once at the boundary.
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
@@ -8,35 +8,40 @@ import nodePath from "node:path";
 import { Runtime } from "psychoscript";
 import type { Diagnostic } from "psychoscript";
 
-import { checkCanvasSize, messageOf, wholeNumber } from "./check.ts";
-import { ramp, loadPalette, parseHex, savePalette } from "./color.ts";
-import * as D from "./draft.ts";
-import type { CelKey, Draft } from "./draft.ts";
+import { messageOf, wholeNumber } from "./check.ts";
+import { loadPalette, parseHex, ramp, savePalette } from "./color.ts";
 import { insideAllowedDir } from "./files.ts";
 import { help } from "./help.ts";
 import { listLibs, mapError, prepare, readLib, saveLib } from "./library.ts";
 import type { MappedError, Prepared } from "./library.ts";
-import { compareVersions } from "./link.ts";
 import type { Link } from "./link.ts";
 import * as R from "./raster.ts";
 import {
-  guardImage,
-  composite,
   critiqueSheet,
   decodePng,
   encodeGif,
   encodePng,
   frameStrip,
   gridSheet,
+  guardImage,
   renderView,
   upscale,
 } from "./render.ts";
-import { fromRgba, toRgba } from "./wire.ts";
+import { createSpriteStore } from "./session.ts";
+import type {
+  ArtistChange,
+  CommitInfo,
+  DiscardedSprite,
+  LayerOptions,
+  SpriteDraft,
+  SpriteSession,
+  SpriteSummary,
+  TagDirection,
+} from "./session.ts";
 import type { ColorMode } from "./wire.ts";
 
 export { DESCRIPTION } from "./help.ts";
-
-/** The daemon's connection to the Aseprite extension; replies are unchecked extension JSON. */
+export type { ArtistChange, CommitInfo } from "./session.ts";
 
 export interface Limits {
   draftBytes: number;
@@ -54,16 +59,6 @@ export interface RuntimeOptions {
   libDir?: string | null;
   allowedDirs?: string[];
   limits?: Partial<Limits>;
-}
-
-export interface CommitInfo {
-  sprite: number;
-  name: string;
-  label: string;
-  cels: number;
-  pixels: number;
-  merged: number;
-  lost: number;
 }
 
 /** A rect, or "selection" for the artist's selection. */
@@ -158,13 +153,6 @@ export interface ViewResult {
   height: number;
 }
 
-/** One cel the artist changed since this daemon last looked. */
-export type ArtistChange = R.PixelRows & {
-  layer: string;
-  frame: number;
-  rect: R.Rect;
-};
-
 export interface SpriteHandle {
   id: number;
   name: string;
@@ -177,7 +165,7 @@ export interface SpriteHandle {
   commit: (label?: unknown) => Promise<CommitInfo>;
   export: (nameOrPath: unknown, o?: ExportOptions) => Promise<ExportResult>;
   frames: () => number;
-  layer: (name: string, o?: D.LayerOptions) => void;
+  layer: (name: string, o?: LayerOptions) => void;
   layers: () => string[];
   redo: (n?: number) => Promise<void>;
   resize: (
@@ -192,24 +180,18 @@ export interface SpriteHandle {
     name: string,
     from: number,
     to: number,
-    o?: { direction?: D.TagDirection }
+    o?: { direction?: TagDirection }
   ) => void;
   undo: (n?: number) => Promise<void>;
   view: (o?: ViewOptions) => Promise<ViewResult>;
 }
 
-/** One sprite inside one run: `d` is replaced on undo/redo/changes, so handles read it through the state. */
-interface SpriteState {
-  d: Draft;
-  handle?: SpriteHandle;
-}
-
 interface Run {
-  states: Map<number, SpriteState>;
+  session: SpriteSession;
+  handles: Map<number, SpriteHandle>;
   /** Pictures loaded by image() in this run, indexed by ImageHandle.image. */
   loaded: R.Canvas[];
   images: string[];
-  commits: CommitInfo[];
   /** "map on \"body\"@0" -> opaque pixels dropped outside the canvas and the canvas size then. */
   clips: Map<string, { pixels: number; size: string }>;
   /** Libraries prepended to this run's program. */
@@ -222,11 +204,6 @@ export interface SpriteOptions {
   open?: unknown;
   id?: number;
   name?: string;
-}
-
-interface Discarded {
-  cels: number;
-  sprite: number;
 }
 
 interface EnvelopeBase {
@@ -245,139 +222,46 @@ export interface ExecuteFailure extends EnvelopeBase {
   ok: false;
   /** line is in the program, or in `library` when the error is inside a used library. */
   error: MappedError;
-  discarded?: Discarded[];
+  discarded?: DiscardedSprite[];
 }
 /** What execute() hands back to the agent; it never rejects. */
 export type ExecuteResult = ExecuteSuccess | ExecuteFailure;
-
-interface CommitReply {
-  applied?: boolean;
-  cels?: number;
-  reason?: string;
-  message?: string;
-  conflicts?: { write: number; blob?: number | null }[];
-}
 
 export const DEFAULT_LIMITS: Limits = {
   draftBytes: 64 * 1024 * 1024,
   maxOutputBytes: 64_000,
   timeoutMs: 60_000,
 };
-const MAX_RETRIES = 3;
-const RESIZE_EXTENSION = "0.2.0";
-const DIRECT_TARGET_EXTENSION = "0.3.0";
-// Lua prefixes "MCP: ".
-const AUTO_LABEL = "program";
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
-
-const record = (cmd: string, v: unknown): Record<string, unknown> => {
-  if (!isRecord(v)) {
-    throw new Error(`Aseprite sent a malformed ${cmd} reply.`);
-  }
-  return v;
-};
-
-const isSnapshot = (v: unknown): v is D.SnapshotReply =>
-  isRecord(v) &&
-  isRecord(v.sprite) &&
-  Array.isArray(v.palette) &&
-  Array.isArray(v.frames) &&
-  Array.isArray(v.layers) &&
-  Array.isArray(v.tags) &&
-  Array.isArray(v.cels);
-
-const isCommitReply = (v: unknown): v is CommitReply =>
-  isRecord(v) && (v.conflicts === undefined || Array.isArray(v.conflicts));
-
-const mb = (n: number): number => Math.ceil(n / (1024 * 1024));
-
-const noteClip = (run: Run, call: string, pixels: number, d: Draft): void => {
+const noteClip = (
+  run: Run,
+  call: string,
+  pixels: number,
+  draft: SpriteDraft
+): void => {
   const seen = run.clips.get(call);
   run.clips.set(call, {
     pixels: (seen?.pixels ?? 0) + pixels,
-    size: `${d.sprite.width}x${d.sprite.height}`,
+    size: `${draft.width}x${draft.height}`,
   });
 };
 
-/** cel key -> base bytes: what Aseprite holds according to this draft. */
-const baseMap = (d: Draft): Map<CelKey, Uint8Array> => {
-  const out = new Map<CelKey, Uint8Array>();
-  for (const [key, buf] of d.cels) {
-    if (buf.base) {
-      out.set(key, buf.base);
-    }
-  }
-  return out;
-};
-
-const pending = (d: Draft): { cels: number; dirty: boolean } => {
-  try {
-    const p = D.plan(d);
-    return {
-      cels: p.writes.length,
-      dirty: p.ops.length > 0 || p.writes.length > 0,
-    };
-  } catch {
-    return { cels: 0, dirty: true };
-  }
-};
-
-const visible = (a: Uint8Array, i: number): number =>
-  a[i + 3] === 0
-    ? 0
-    : ((a[i] << 24) | (a[i + 1] << 16) | (a[i + 2] << 8) | a[i + 3]) >>> 0;
-
-/** Bounding rect of pixels whose visible value differs; null = no difference. */
-const diffRect = (
-  a: Uint8Array | null,
-  b: Uint8Array | null,
-  w: number,
-  h: number
-): R.Rect | null => {
-  let x0 = w;
-  let y0 = h;
-  let x1 = -1;
-  let y1 = -1;
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      const i = (y * w + x) * 4;
-      if ((a ? visible(a, i) : 0) === (b ? visible(b, i) : 0)) {
-        continue;
-      }
-      x0 = Math.min(x0, x);
-      x1 = Math.max(x1, x);
-      y0 = Math.min(y0, y);
-      y1 = Math.max(y1, y);
-    }
-  }
-  return x1 < 0 ? null : [x0, y0, x1 - x0 + 1, y1 - y0 + 1];
-};
-
-const byLayerThenFrame = (a: ArtistChange, b: ArtistChange): number => {
-  if (a.layer < b.layer) {
-    return -1;
-  }
-  if (a.layer > b.layer) {
-    return 1;
-  }
-  return a.frame - b.frame;
-};
-
-const selectionRect = (d: Draft): R.Rect => {
-  const sel = d.sprite.selection;
+const selectionRect = (draft: SpriteDraft): R.Rect => {
+  const sel = draft.selection;
   if (!sel) {
     throw new Error(
-      `No selection in '${d.sprite.name}'; pass a rect [x, y, w, h] instead.`
+      `No selection in '${draft.name}'; pass a rect [x, y, w, h] instead.`
     );
   }
   return sel;
 };
-const rectOf = (d: Draft, r: RectArg): R.Rect =>
-  r === "selection" ? selectionRect(d) : r;
-const rectIn = (d: Draft, o?: { rect?: RectArg }): R.Rect | undefined =>
-  o?.rect === undefined ? undefined : rectOf(d, o.rect);
+const rectOf = (draft: SpriteDraft, r: RectArg): R.Rect =>
+  r === "selection" ? selectionRect(draft) : r;
+const rectIn = (
+  draft: SpriteDraft,
+  o?: { rect?: RectArg }
+): R.Rect | undefined =>
+  o?.rect === undefined ? undefined : rectOf(draft, o.rect);
 
 const checkMap: (
   palette: R.Palette | undefined,
@@ -399,39 +283,20 @@ const checkMap: (
   }
 };
 
-/** Visible pixel layers of one frame, composited bottom to top; a hidden group hides its children. */
-const flatten = (d: Draft, frame: number): R.Canvas => {
-  const byPath = new Map(d.structure.layers.map((l) => [l.path, l]));
-  const shown = (path: string): boolean => {
-    for (let p = path; ; p = p.slice(0, p.lastIndexOf("/"))) {
-      if (!byPath.get(p)?.visible) {
-        return false;
-      }
-      if (!p.includes("/")) {
-        return true;
-      }
-    }
-  };
-  const layers = d.structure.layers
-    .filter((l) => !l.group && shown(l.path))
-    .map((l) => ({ data: D.readable(d, l.path, frame), opacity: l.opacity }));
-  return composite(layers, d.sprite.width, d.sprite.height);
-};
-
 const celHandle = (
   run: Run,
-  st: SpriteState,
+  draft: SpriteDraft,
   layer: string,
   frame: number
 ): CelHandle => {
-  D.readable(st.d, layer, frame);
+  draft.readable(layer, frame);
   const canvas = (data: Uint8Array): R.Canvas => ({
     data,
-    height: st.d.sprite.height,
-    width: st.d.sprite.width,
+    height: draft.height,
+    width: draft.width,
   });
-  const cv = () => canvas(D.writable(st.d, layer, frame));
-  const ro = () => canvas(D.readable(st.d, layer, frame));
+  const cv = () => canvas(draft.writable(layer, frame));
+  const ro = () => canvas(draft.readable(layer, frame));
   const draw = (method: string, fn: (c: R.Canvas) => number): number => {
     const c = cv();
     const n = fn(c);
@@ -440,15 +305,14 @@ const celHandle = (
         run,
         `${method} on ${JSON.stringify(layer)}@${frame}`,
         c.clipped,
-        st.d
+        draft
       );
     }
     return n;
   };
   return {
-    bounds: () =>
-      diffRect(null, ro().data, st.d.sprite.width, st.d.sprite.height),
-    clear: (r) => R.clear(cv(), r === undefined ? undefined : rectOf(st.d, r)),
+    bounds: () => draft.bounds(layer, frame),
+    clear: (r) => R.clear(cv(), r === undefined ? undefined : rectOf(draft, r)),
     copy: (from, o) => {
       if (from?.image !== undefined) {
         const picture = run.loaded[from.image];
@@ -460,23 +324,24 @@ const celHandle = (
         }
         return draw("copy", (c) => R.copy(c, picture, { ...o, rect }));
       }
-      const src = from?.sprite === undefined ? st : run.states.get(from.sprite);
+      const src =
+        from?.sprite === undefined ? draft : run.session.get(from.sprite);
       if (!src || typeof from?.layer !== "string") {
         throw new Error(
           "copy: pass a cel handle, { layer, frame } (add sprite: id for another sprite), or an image handle."
         );
       }
-      const data = D.readable(src.d, from.layer, from.frame ?? 0);
+      const data = src.readable(from.layer, from.frame ?? 0);
       return draw("copy", (c) =>
         R.copy(
           c,
-          { data, height: src.d.sprite.height, width: src.d.sprite.width },
-          { ...o, rect: rectIn(src.d, o) }
+          { data, height: src.height, width: src.width },
+          { ...o, rect: rectIn(src, o) }
         )
       );
     },
     ellipse: (r, color, o) =>
-      draw("ellipse", (c) => R.ellipse(c, rectOf(st.d, r), color, o)),
+      draw("ellipse", (c) => R.ellipse(c, rectOf(draft, r), color, o)),
     fill: (x, y, color) => R.fill(cv(), x, y, color),
     frame,
     layer,
@@ -490,18 +355,20 @@ const celHandle = (
       const [col, opts] =
         color && typeof color === "object" ? [undefined, color] : [color, o];
       return draw("outline", (c) =>
-        R.outline(c, col, { ...opts, rect: rectIn(st.d, opts) })
+        R.outline(c, col, { ...opts, rect: rectIn(draft, opts) })
       );
     },
     px: (points) => draw("px", (c) => R.px(c, points)),
-    read: (o) => R.read(ro(), { ...o, rect: rectIn(st.d, o) }),
+    read: (o) => R.read(ro(), { ...o, rect: rectIn(draft, o) }),
     recolor: (mapping, o) =>
-      R.recolor(cv(), mapping, { ...o, rect: rectIn(st.d, o) }),
+      R.recolor(cv(), mapping, { ...o, rect: rectIn(draft, o) }),
     rect: (r, color, o) =>
-      draw("rect", (c) => R.rect(c, rectOf(st.d, r), color, o)),
+      draw("rect", (c) => R.rect(c, rectOf(draft, r), color, o)),
     shift: (dx, dy, o) =>
-      draw("shift", (c) => R.shift(c, dx, dy, { ...o, rect: rectIn(st.d, o) })),
-    sprite: st.d.sprite.id,
+      draw("shift", (c) =>
+        R.shift(c, dx, dy, { ...o, rect: rectIn(draft, o) })
+      ),
+    sprite: draft.id,
   };
 };
 
@@ -521,13 +388,16 @@ const wholeOption = (name: string, value: unknown, fallback: number): number =>
   value === undefined ? fallback : wholeNumber(`export: ${name}`, value);
 
 /** Frame range of the whole sprite, or of one tag. */
-const exportRange = (d: Draft, tag: unknown): { from: number; to: number } => {
+const exportRange = (
+  draft: SpriteDraft,
+  tag: unknown
+): { from: number; to: number } => {
   if (tag === undefined) {
-    return { from: 0, to: d.structure.durations.length - 1 };
+    return { from: 0, to: draft.durations.length - 1 };
   }
-  const found = d.structure.tags.find((t) => t.name === tag);
+  const found = draft.tags.find((t) => t.name === tag);
   if (!found) {
-    const names = d.structure.tags.map((t) => t.name);
+    const names = draft.tags.map((t) => t.name);
     throw new Error(
       `export: no tag '${String(tag)}'. Tags: ${names.join(", ") || "none"}.`
     );
@@ -561,10 +431,7 @@ export const createRuntime = ({
   ) => Promise<ExecuteResult>;
 } => {
   const lim: Limits = { ...DEFAULT_LIMITS, ...limits };
-  /** sprite id -> cel key -> RGBA this daemon last saw in Aseprite (for changes()). */
-  const lastSeen = new Map<number, Map<CelKey, Uint8Array>>();
-  /** RGBA buffer -> the exact sprite-mode bytes it came from, so CAS bases match Aseprite byte for byte. */
-  const rawBytes = new WeakMap<Uint8Array, Uint8Array>();
+  const store = createSpriteStore({ draftBytes: lim.draftBytes, link });
   let viewSeq = 0;
 
   // Symlinks are resolved first, so a link inside an allowed folder cannot reach outside it.
@@ -598,147 +465,12 @@ export const createRuntime = ({
     return real;
   };
 
-  const snapshot = async (ref?: unknown): Promise<Draft> => {
-    const { result, blobs } = await link.request(
-      "snapshot",
-      ref === undefined ? {} : { sprite: ref }
-    );
-    if (!isSnapshot(result)) {
-      throw new Error("Aseprite sent a malformed snapshot reply.");
-    }
-    const s = result.sprite;
-    const bytes = blobs.length * s.width * s.height * 4;
-    if (bytes > lim.draftBytes) {
-      throw new Error(
-        `Sprite '${s.name}' holds ${mb(bytes)} MB of cel pixels; the limit is ${mb(lim.draftBytes)} MB. Work on a smaller sprite.`
-      );
-    }
-    const rgba = blobs.map((b) => {
-      const x = toRgba(b, s.colorMode, result.palette, s.transparentIndex);
-      rawBytes.set(x, b);
-      return x;
-    });
-    s.path ??= null;
-    const d = D.fromSnapshot(
-      { ...result, selection: result.selection ?? null },
-      rgba
-    );
-    if (!lastSeen.has(d.sprite.id)) {
-      lastSeen.set(d.sprite.id, baseMap(d));
-    }
-    return d;
-  };
-
-  const activate = async (id: number): Promise<void> => {
-    const { result } = await link.request("sprites", {});
-    if (record("sprites", result).active !== id) {
-      await link.request("sprites", { select: id });
-    }
-  };
-
-  /** plan -> commit -> on conflict merge3 and retry (max 3) -> rebase. A clean draft sends nothing. */
-  const commitDraft = (
-    run: Run,
-    st: SpriteState,
-    label: string
-  ): Promise<CommitInfo | null> => {
-    const { d } = st;
-    const { colorMode: mode, transparentIndex: ti } = d.sprite;
-    const merged = new Set<CelKey>();
-    let lost = 0;
-    const attempt = async (n: number): Promise<CommitInfo | null> => {
-      const p = D.plan(d);
-      if (!p.ops.length && !p.writes.length) {
-        return null;
-      }
-      const blobs: Uint8Array[] = [];
-      const add = (bytes: Uint8Array): number => {
-        blobs.push(bytes);
-        return blobs.length - 1;
-      };
-      const writes = p.writes.map((w) => ({
-        base: w.base
-          ? add(
-              rawBytes.get(w.base) ??
-                fromRgba(w.base, mode, p.palette, ti).bytes
-            )
-          : null,
-        frame: w.frame,
-        layer: w.layer,
-        next: w.next ? add(fromRgba(w.next, mode, p.palette, ti).bytes) : null,
-      }));
-      const { result, blobs: current } = await link.request(
-        "commit",
-        { label, ops: p.ops, sprite: d.sprite.id, writes },
-        blobs
-      );
-      if (!isCommitReply(result)) {
-        throw new Error("Aseprite sent a malformed commit reply.");
-      }
-      if (result.applied) {
-        for (const [i, w] of p.writes.entries()) {
-          const at = writes[i].next;
-          if (w.next && at !== null) {
-            rawBytes.set(w.next, blobs[at]);
-          }
-        }
-        D.rebase(d, p);
-        lastSeen.set(d.sprite.id, baseMap(d));
-        const info: CommitInfo = {
-          cels: result.cels ?? 0,
-          label,
-          lost,
-          merged: merged.size,
-          name: d.sprite.name,
-          pixels: p.pixels,
-          sprite: d.sprite.id,
-        };
-        run.commits.push(info);
-        return info;
-      }
-      if (result.reason !== "conflict") {
-        throw new Error(
-          `Commit '${label}' failed: ${result.message}. Call sprite() again to see the current layers.`
-        );
-      }
-      if (n === MAX_RETRIES) {
-        throw new Error(
-          `Commit '${label}' gave up after ${MAX_RETRIES} retries: the artist kept changing the same cels. Run the program again.`
-        );
-      }
-      for (const c of result.conflicts ?? []) {
-        const w = p.writes[c.write];
-        const raw =
-          c.blob === undefined || c.blob === null ? null : current[c.blob];
-        const theirs = raw ? toRgba(raw, mode, d.sprite.palette, ti) : null;
-        if (theirs && raw) {
-          rawBytes.set(theirs, raw);
-        }
-        lost += D.resolveConflict(d, w.key, theirs).lost;
-        merged.add(w.key);
-      }
-      return attempt(n + 1);
-    };
-    return attempt(0);
-  };
-
-  // Sprites commit one after another; the first failure stops the rest.
-  const commitAll = async (run: Run, states: SpriteState[]): Promise<void> => {
-    const [st, ...rest] = states;
-    if (!st) {
-      return;
-    }
-    await commitDraft(run, st, AUTO_LABEL);
-    await commitAll(run, rest);
-  };
-
   const view = async (
     run: Run,
-    st: SpriteState,
+    draft: SpriteDraft,
     o: ViewOptions = {}
   ): Promise<ViewResult> => {
-    const { d } = st;
-    const n = d.structure.durations.length;
+    const n = draft.frames();
     const frames =
       o.frame === "all"
         ? Array.from({ length: n }, (_, f) => f)
@@ -750,9 +482,9 @@ export const createRuntime = ({
         );
       }
     }
-    const r = o.rect === undefined ? null : rectOf(d, o.rect);
+    const r = o.rect === undefined ? null : rectOf(draft, o.rect);
     const pics = frames.map((f) =>
-      r ? R.crop(flatten(d, f), r) : flatten(d, f)
+      r ? R.crop(draft.flatten(f), r) : draft.flatten(f)
     );
     const cv = pics.length === 1 ? pics[0] : frameStrip(pics);
     const rgb = o.background === undefined ? undefined : parseHex(o.background);
@@ -761,7 +493,7 @@ export const createRuntime = ({
       ? critiqueSheet(cv, { background, scale: o.scale })
       : renderView(cv, { background, scale: o.scale });
     await mkdir(viewsDir, { recursive: true });
-    const safe = d.sprite.name.replaceAll(/[^\w.-]+/gu, "_").slice(0, 40);
+    const safe = draft.name.replaceAll(/[^\w.-]+/gu, "_").slice(0, 40);
     viewSeq += 1;
     const path = nodePath.join(
       viewsDir,
@@ -774,8 +506,7 @@ export const createRuntime = ({
 
   /** Writes <name>.png + <name>.json (the sheet) and/or <name>.gif, only after every part encoded. */
   const exportSprite = async (
-    run: Run,
-    st: SpriteState,
+    draft: SpriteDraft,
     nameOrPath: unknown,
     o: ExportOptions = {}
   ): Promise<ExportResult> => {
@@ -804,18 +535,17 @@ export const createRuntime = ({
     const sheetPaths =
       jsonPath && pngPath ? { json: jsonPath, png: pngPath } : null;
     const files: [string, Buffer | string][] = [];
-    await commitDraft(run, st, AUTO_LABEL);
-    const { d } = st;
-    const { durations, tags } = d.structure;
-    const { from, to } = exportRange(d, o.tag);
+    await draft.commit("program");
+    const { durations, tags } = draft;
+    const { from, to } = exportRange(draft, o.tag);
     const indices = Array.from({ length: to - from + 1 }, (_, n) => from + n);
     // Every scaled frame is held at once, so the limit applies to all of them together.
     guardImage(
       `${indices.length} frames at ${scale}x`,
-      d.sprite.width * scale,
-      d.sprite.height * scale * indices.length
+      draft.width * scale,
+      draft.height * scale * indices.length
     );
-    const frames = indices.map((f) => upscale(flatten(d, f), scale));
+    const frames = indices.map((f) => upscale(draft.flatten(f), scale));
     const [{ width, height }] = frames;
     const out: ExportResult = { frames: frames.length, height, width };
     if (sheetPaths) {
@@ -860,199 +590,58 @@ export const createRuntime = ({
     return out;
   };
 
-  const directTarget = (): boolean =>
-    compareVersions(link.status().extension, DIRECT_TARGET_EXTENSION) >= 0;
-
-  const history = async (
-    st: SpriteState,
-    action: "undo" | "redo",
-    n = 1
-  ): Promise<void> => {
-    wholeNumber(`${action}(n): n`, n);
-    if (pending(st.d).dirty) {
-      throw new Error(
-        `${action}() would drop this program's uncommitted edits; call await s.commit() first.`
-      );
-    }
-    const { id } = st.d.sprite;
-    if (directTarget()) {
-      await link.request("history", { action, sprite: id, steps: n });
-    } else {
-      await activate(id);
-      await link.request("history", { action, steps: n });
-    }
-    st.d = await snapshot(id);
-    lastSeen.set(id, baseMap(st.d));
-  };
-
-  /** Cels whose pixels differ from what this daemon last saw (artist edits), as palette + rows. */
-  const changes = async (st: SpriteState): Promise<ArtistChange[]> => {
-    const { id } = st.d.sprite;
-    const fresh = await snapshot(id);
-    const before = lastSeen.get(id) ?? new Map<CelKey, Uint8Array>();
-    const after = baseMap(fresh);
-    const { width: w, height: h } = fresh.sprite;
-    const out: ArtistChange[] = [];
-    for (const key of new Set([...before.keys(), ...after.keys()])) {
-      const now = after.get(key) ?? null;
-      const rect = diffRect(before.get(key) ?? null, now, w, h);
-      if (!rect) {
-        continue;
-      }
-      const { layer, frame } = D.parseKey(key);
-      out.push({
-        frame,
-        layer,
-        rect,
-        ...R.read(
-          { data: now ?? new Uint8Array(w * h * 4), height: h, width: w },
-          { rect }
-        ),
-      });
-    }
-    lastSeen.set(id, after);
-    if (!pending(st.d).dirty) {
-      st.d = fresh;
-    }
-    return out.toSorted(byLayerThenFrame);
-  };
-
-  /** Moves every cel and keeps the exact Aseprite bytes of each moved base, so the commit's CAS still matches. */
-  const resize = (
-    run: Run,
-    st: SpriteState,
-    width: number,
-    height: number,
-    o: { x?: number; y?: number }
-  ): void => {
-    const { extension } = link.status();
-    if (compareVersions(extension, RESIZE_EXTENSION) < 0) {
-      throw new Error(
-        `resize: the connected Aseprite extension is ${extension ?? "unknown"}; update the Aseprite extension to ${RESIZE_EXTENSION}.`
-      );
-    }
-    const { d } = st;
-    const { width: w, height: h, colorMode, transparentIndex } = d.sprite;
-    const x = o.x ?? Math.floor((width - w) / 2);
-    const y = o.y ?? height - h;
-    checkCanvasSize("resize(width, height)", width, height);
-    if (!Number.isInteger(x) || !Number.isInteger(y)) {
-      throw new TypeError(
-        `resize: x and y must be whole numbers, got ${x}, ${y}.`
-      );
-    }
-    const bytes = d.cels.size * width * height * 4;
-    if (bytes > lim.draftBytes) {
-      throw new Error(
-        `resize(${width}, ${height}): ${d.cels.size} cels at that size are ${mb(bytes)} MB of pixels; the limit is ${mb(lim.draftBytes)} MB.`
-      );
-    }
-    const { bases, dropped } = D.resize(d, { height, width, x, y });
-    const fill = colorMode === "indexed" ? transparentIndex : 0;
-    for (const [old, next] of bases) {
-      const raw = rawBytes.get(old);
-      if (raw) {
-        rawBytes.set(
-          next,
-          D.moveCanvas(raw, [w, h], [width, height], [x, y], fill)
-        );
-      }
-    }
-    for (const [key, pixels] of dropped) {
-      const { layer, frame } = D.parseKey(key);
-      noteClip(run, `resize on ${JSON.stringify(layer)}@${frame}`, pixels, d);
-    }
-  };
-
-  const spriteHandle = (run: Run, st: SpriteState): SpriteHandle => {
-    const { id, name, width, height, colorMode } = st.d.sprite;
+  const spriteHandle = (run: Run, draft: SpriteDraft): SpriteHandle => {
+    const { id, name, width, height, colorMode } = draft;
     return {
-      cel: (layer, frame = 0) => celHandle(run, st, layer, frame),
+      cel: (layer, frame = 0) => celHandle(run, draft, layer, frame),
       cels: (layer) => {
-        D.readable(st.d, layer, 0);
-        return st.d.structure.durations.map((_, f) =>
-          celHandle(run, st, layer, f)
+        draft.readable(layer, 0);
+        return Array.from({ length: draft.frames() }, (_, f) =>
+          celHandle(run, draft, layer, f)
         );
       },
-      changes: () => changes(st),
+      changes: () => draft.changes(),
       colorMode,
-      commit: async (label = "checkpoint") =>
-        (await commitDraft(run, st, String(label))) ?? {
-          cels: 0,
-          label: String(label),
-          lost: 0,
-          merged: 0,
-          name,
-          pixels: 0,
-          sprite: id,
-        },
-      export: (nameOrPath, o) => exportSprite(run, st, nameOrPath, o),
-      frames: () => st.d.structure.durations.length,
+      commit: (label = "checkpoint") => draft.commit(String(label)),
+      export: (nameOrPath, o) => exportSprite(draft, nameOrPath, o),
+      frames: () => draft.frames(),
       height,
       id,
       layer: (layerName, o) => {
-        D.stageLayer(st.d, layerName, o ?? {});
+        draft.layer(layerName, o ?? {});
       },
-      layers: () => st.d.structure.layers.map((l) => l.path),
+      layers: () => draft.layers(),
       name,
-      redo: (n) => history(st, "redo", n),
+      redo: (n) => draft.redo(n),
       resize: (w, h, o) => {
-        resize(run, st, w, h, o ?? {});
+        for (const [layer, frame, pixels] of draft.resize(w, h, o ?? {})) {
+          noteClip(
+            run,
+            `resize on ${JSON.stringify(layer)}@${frame}`,
+            pixels,
+            draft
+          );
+        }
         // Handles copy width and height once, so the new size needs a new handle.
-        st.handle = spriteHandle(run, st);
-        return st.handle;
+        const fresh = spriteHandle(run, draft);
+        run.handles.set(draft.id, fresh);
+        return fresh;
       },
       save: async (path) => {
         const abs = path === undefined ? undefined : await allowedPath(path);
-        await commitDraft(run, st, AUTO_LABEL);
-        const args = {
-          ...(abs !== undefined && { path: abs }),
-          ...(directTarget() && { sprite: id }),
-        };
-        if (!directTarget()) {
-          await activate(id);
-        }
-        const { result } = await link.request("save", args);
-        return record("save", result).saved;
+        return draft.save(abs);
       },
-      selection: () => st.d.sprite.selection ?? null,
+      selection: () => draft.selection,
       setFrames: (count, o = {}) => {
-        const layers = st.d.structure.layers.filter((l) => !l.group).length;
-        const bytes = count * layers * width * height * 4;
-        if (bytes > lim.draftBytes) {
-          throw new Error(
-            `setFrames(${count}): ${layers} layer(s) x ${count} frames is ${mb(bytes)} MB of pixels; the limit is ${mb(lim.draftBytes)} MB.`
-          );
-        }
-        D.setFrames(st.d, count, o.duration);
+        draft.setFrames(count, o.duration);
       },
       tag: (tagName, from, to, o) => {
-        D.stageTag(st.d, tagName, from, to, o ?? {});
+        draft.tag(tagName, from, to, o ?? {});
       },
-      undo: (n) => history(st, "undo", n),
-      view: (o) => view(run, st, o),
+      undo: (n) => draft.undo(n),
+      view: (o) => view(run, draft, o),
       width,
     };
-  };
-
-  const openSprite = async (o: SpriteOptions): Promise<unknown> => {
-    if (o.new) {
-      const [w, h] = o.new;
-      checkCanvasSize("sprite({ new: [w, h] })", w, h);
-      const { result } = await link.request("new_sprite", {
-        colorMode: o.colorMode ?? "rgb",
-        height: h,
-        width: w,
-      });
-      return record("new_sprite", result).spriteId;
-    }
-    if (o.open !== undefined) {
-      const { result } = await link.request("open", {
-        path: await allowedPath(o.open),
-      });
-      return record("open", result).spriteId;
-    }
-    return o.id ?? o.name;
   };
 
   const libs = (): string => {
@@ -1088,35 +677,25 @@ export const createRuntime = ({
         : savePalette(palettesFile, name, colors),
     ramp: (base: string, keys: string, o?: { hueShift?: number }) =>
       ramp(base, keys, o),
-    async sprite(o: SpriteOptions = {}): Promise<SpriteHandle | undefined> {
-      const d = await snapshot(await openSprite(o));
-      const known = run.states.get(d.sprite.id);
-      if (known) {
-        if (!pending(known.d).dirty) {
-          known.d = d;
-        }
-        return known.handle;
+    async sprite(o: SpriteOptions = {}): Promise<SpriteHandle> {
+      const openPath =
+        o.open === undefined ? undefined : await allowedPath(o.open);
+      const draft = await run.session.open({
+        colorMode: o.colorMode,
+        id: o.id,
+        name: o.name,
+        new: o.new,
+        openPath,
+      });
+      const existing = run.handles.get(draft.id);
+      if (existing) {
+        return existing;
       }
-      const st: SpriteState = { d };
-      st.handle = spriteHandle(run, st);
-      run.states.set(d.sprite.id, st);
-      return st.handle;
+      const handle = spriteHandle(run, draft);
+      run.handles.set(draft.id, handle);
+      return handle;
     },
-    async sprites(): Promise<Record<string, unknown>[]> {
-      const { result } = await link.request("sprites", {});
-      const { sprites } = record("sprites", result);
-      if (!Array.isArray(sprites) || !sprites.every((x) => isRecord(x))) {
-        throw new Error("Aseprite sent a malformed sprites reply.");
-      }
-      return sprites.map(({ id, name, width, height, frames, active }) => ({
-        active,
-        frames,
-        height,
-        id,
-        name,
-        width,
-      }));
-    },
+    sprites: (): Promise<SpriteSummary[]> => store.list(),
     use(name?: unknown): void {
       if (typeof name !== "string" || !run.libraries.has(name)) {
         throw new Error(
@@ -1133,11 +712,11 @@ export const createRuntime = ({
     const t0 = Date.now();
     const run: Run = {
       clips: new Map(),
-      commits: [],
+      handles: new Map(),
       images: [],
       libraries: new Set(),
       loaded: [],
-      states: new Map(),
+      session: store.openSession(),
     };
     const done = <E extends object>(e: E) => ({ ...e, ms: Date.now() - t0 });
     let prepared: Prepared;
@@ -1177,17 +756,13 @@ export const createRuntime = ({
       };
     }
     const logs = r.logs?.length ? { logs: r.logs } : {};
-    const discarded = (): { discarded?: Discarded[] } => {
-      const list = [...run.states.values()]
-        .map((st) => ({ sprite: st.d.sprite.id, ...pending(st.d) }))
-        .filter((x) => x.dirty);
-      return list.length
-        ? { discarded: list.map(({ sprite, cels }) => ({ cels, sprite })) }
-        : {};
+    const discarded = (): { discarded?: DiscardedSprite[] } => {
+      const list = run.session.discarded();
+      return list.length ? { discarded: list } : {};
     };
     if (!r.ok) {
       return done({
-        commit: run.commits,
+        commit: [...run.session.commits],
         error: mapError(prepared, r.error),
         ok: false as const,
         ...discarded(),
@@ -1197,7 +772,7 @@ export const createRuntime = ({
     }
     if (options?.signal?.aborted) {
       return done({
-        commit: run.commits,
+        commit: [...run.session.commits],
         error: { kind: "Aborted", message: "Execution aborted." },
         ok: false as const,
         ...discarded(),
@@ -1206,10 +781,10 @@ export const createRuntime = ({
       });
     }
     try {
-      await commitAll(run, [...run.states.values()]);
+      await run.session.commitAll();
     } catch (error) {
       return done({
-        commit: run.commits,
+        commit: [...run.session.commits],
         error: { kind: "CommitFailed", message: messageOf(error) },
         ok: false as const,
         ...discarded(),
@@ -1224,7 +799,7 @@ export const createRuntime = ({
     const all = [...(r.warnings ?? []), ...clipped];
     const warnings = all.length ? { warnings: all } : {};
     return done({
-      commit: run.commits,
+      commit: [...run.session.commits],
       images: run.images,
       ok: true as const,
       value: r.value,
