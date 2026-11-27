@@ -1,4 +1,6 @@
-# Aseprite MCP
+<p align="center"><img src="assets/banner@4x.gif" alt="Aseprite MCP banner: a brain-in-a-jar wizard robot hovers on rocket jets and casts a spell with a pencil wand at a biting floppy disk, a UFO abducting a cow, a worried planet, a three-eyed jellyfish, a tentacled eyeball and a duck astronaut, while a moon snores and the title glitches" width="960"></p>
+
+# <img src="assets/icon@4x.png" alt="" width="48" height="48" align="top"> Aseprite MCP
 
 Aseprite MCP lets an AI agent draw pixel art live in [Aseprite](https://www.aseprite.org/). The agent writes one JavaScript program per step ("code mode"). The server exposes one tool, `execute`.
 
@@ -323,6 +325,8 @@ npm run fix          # apply safe fixes, then rerun the tests
 `node --test` also runs `test/aseprite.test.ts`. It runs `test/aseprite-handlers.lua` in a real Aseprite in batch mode, and it skips when it cannot find the app. Set `ASEPRITE=/path/to/aseprite` to point to the binary.
 
 `npm run build` writes `dist/aseprite-mcp.aseprite-extension` (currently extension `0.3.0`).
+
+The icon and banner in `assets/` come from `scripts/art.lua`. To draw them again, run `aseprite -b --script scripts/art.lua`. It writes the `.aseprite` sources, scaled PNGs and the animated banner GIF.
 
 ### Architecture
 
