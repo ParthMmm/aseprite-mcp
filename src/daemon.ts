@@ -1,5 +1,6 @@
 // The one aseprite-mcp process per machine. Binding the HTTP port is the lock: a second daemon finds it
 // taken and stops. Routes: POST /mcp (stateless MCP, one tool), GET /health, POST /shutdown.
+import { timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -25,9 +26,12 @@ export type { RuntimeOptions } from "./program.ts";
 
 const HOST = "127.0.0.1";
 const MAX_BODY = 16 * 1024 * 1024;
+const MIN_REMOTE_TOKEN = 16;
 const INSTRUCTIONS =
   "Draw in the user's running Aseprite: send a JavaScript program to execute; help() inside it explains the API.";
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const LOOPBACK_IPV4 = /^127(?:\.\d{1,3}){3}$/u;
+const BEARER = /^bearer\s+(?<token>\S+)$/iu;
 
 export interface Envelope {
   ok: boolean;
@@ -48,13 +52,17 @@ export interface Program {
   DESCRIPTION: string;
 }
 
-type Access = "loopback" | "tailnet";
+type Access = "loopback" | "tailnet" | "remote";
+
+type RequestAuth = { access: Access } | { status: 401 | 403; error: string };
 
 export interface DaemonOptions {
   program: Program;
   workspace?: Workspace;
   link?: Link;
   tailnet?: Tailnet | null;
+  httpHost?: string;
+  remoteToken?: string | null;
   version: string;
   httpPort: number;
   wsPort: number;
@@ -85,6 +93,19 @@ const ignore = (): null => null;
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/** True when `address` is a loopback host or IP (IPv4 127.0.0.0/8, ::1, IPv4-mapped loopback, or localhost). */
+export const isLoopbackAddress = (address: string | undefined): boolean => {
+  if (!address) {
+    return false;
+  }
+  const clean = address
+    .trim()
+    .toLowerCase()
+    .replaceAll(/^\[|\]$/gu, "")
+    .replace(/^::ffff:/u, "");
+  return clean === "localhost" || clean === "::1" || LOOPBACK_IPV4.test(clean);
+};
+
 const loopbackOrigin = (origin: string | undefined): boolean => {
   if (origin === undefined) {
     return true;
@@ -100,36 +121,113 @@ const loopbackOrigin = (origin: string | undefined): boolean => {
   }
 };
 
-// DNS rebinding and cross-site requests: only loopback hosts and origins, or allowed Tailscale users through
-// `tailscale serve`, may talk to the daemon.
+const fetchSiteAllowed = (value: string | string[] | undefined): boolean =>
+  value === undefined ||
+  (typeof value === "string" &&
+    (value === "" || value === "same-origin" || value === "none"));
+
+const remoteOriginAllowed = (
+  origin: string | undefined,
+  host: string | undefined
+): boolean =>
+  origin === undefined ||
+  (typeof host === "string" &&
+    host.length > 0 &&
+    (origin === `http://${host}` || origin === `https://${host}`));
+
+const bearerToken = (header: string | undefined): string | null => {
+  if (!header) {
+    return null;
+  }
+  const match = BEARER.exec(header.trim());
+  return match?.groups?.token ?? null;
+};
+
+const secretsEqual = (expected: string, given: string | null): boolean => {
+  if (!given) {
+    return false;
+  }
+  const a = Buffer.from(expected);
+  const b = Buffer.from(given);
+  return a.length === b.length && timingSafeEqual(a, b);
+};
+
+// DNS rebinding, cross-site requests and remote authentication:
+// 1. Direct loopback peers with a loopback Host and Origin (never proxied).
+// 2. Allowed Tailscale users forwarded by local `tailscale serve`.
+// 3. Callers presenting the remote Bearer token (when remote access is enabled).
 const classifyRequest = (
   req: IncomingMessage,
   port: number,
-  tailnet: Tailnet | null
-): Access | null => {
+  tailnet: Tailnet | null,
+  remoteToken: string | null
+): RequestAuth => {
   const { host, origin } = req.headers;
+  const peerIsLoopback = isLoopbackAddress(req.socket.remoteAddress);
   // `tailscale serve` passes the caller's Host header through unchanged, so a proxied request can claim a
   // loopback Host. The proxy always adds X-Forwarded-For.
   const proxied = req.headers["x-forwarded-for"] !== undefined;
-  if (
-    !proxied &&
-    (host === `127.0.0.1:${port}` || host === `localhost:${port}`)
-  ) {
-    return loopbackOrigin(origin) ? "loopback" : null;
+  const loopbackHost =
+    host === `127.0.0.1:${port}` ||
+    host === `localhost:${port}` ||
+    host === `[::1]:${port}`;
+  if (peerIsLoopback && !proxied && loopbackHost) {
+    return loopbackOrigin(origin) &&
+      fetchSiteAllowed(req.headers["sec-fetch-site"])
+      ? { access: "loopback" }
+      : {
+          error: "Cross-origin browser requests are not allowed.",
+          status: 403,
+        };
   }
-  if (!tailnet || host !== tailnet.host) {
-    return null;
+  if (tailnet && peerIsLoopback && host === tailnet.host) {
+    const login = req.headers["tailscale-user-login"];
+    const allowedUser = typeof login === "string" && tailnet.users.has(login);
+    const tailnetOrigin =
+      origin === undefined || origin === `https://${tailnet.host}`;
+    if (
+      allowedUser &&
+      tailnetOrigin &&
+      fetchSiteAllowed(req.headers["sec-fetch-site"])
+    ) {
+      return { access: "tailnet" };
+    }
   }
-  const login = req.headers["tailscale-user-login"];
-  const allowedUser = typeof login === "string" && tailnet.users.has(login);
-  const tailnetOrigin =
-    origin === undefined || origin === `https://${tailnet.host}`;
-  return allowedUser && tailnetOrigin ? "tailnet" : null;
+  if (remoteToken) {
+    if (
+      !(
+        fetchSiteAllowed(req.headers["sec-fetch-site"]) &&
+        remoteOriginAllowed(origin, host)
+      )
+    ) {
+      return {
+        error: "Cross-origin browser requests are not allowed.",
+        status: 403,
+      };
+    }
+    if (secretsEqual(remoteToken, bearerToken(req.headers.authorization))) {
+      return { access: "remote" };
+    }
+    return {
+      error: "Missing or invalid bearer token.",
+      status: 401,
+    };
+  }
+  return {
+    error:
+      "Only loopback callers and allowed Tailscale users may use aseprite-mcp.",
+    status: 403,
+  };
 };
 
-const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
+const sendJson = (
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>
+): void => {
   res
-    .writeHead(status, { "content-type": "application/json" })
+    .writeHead(status, { "content-type": "application/json", ...headers })
     .end(JSON.stringify(body));
 };
 
@@ -231,14 +329,26 @@ export const startDaemon = async ({
   workspace = createWorkspace(),
   link: injectedLink,
   version,
+  httpHost = HOST,
   httpPort,
   wsPort,
   onShutdown,
   log,
   tailnet = null,
+  remoteToken = null,
 }: DaemonOptions): Promise<Daemon | null> => {
+  if (remoteToken !== null && remoteToken.length < MIN_REMOTE_TOKEN) {
+    throw new Error(
+      `The remote token must have at least ${MIN_REMOTE_TOKEN} characters.`
+    );
+  }
+  if (!(isLoopbackAddress(httpHost) || remoteToken)) {
+    throw new Error(
+      "Listening on a non-loopback HTTP host requires a remote token."
+    );
+  }
   const http = createServer();
-  http.listen(httpPort, HOST);
+  http.listen(httpPort, httpHost);
   try {
     await once(http, "listening");
   } catch (error) {
@@ -303,16 +413,22 @@ export const startDaemon = async ({
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> => {
-    const access = classifyRequest(req, port, tailnet);
-    if (!access) {
-      sendJson(res, 403, {
-        error:
-          "Only loopback callers and allowed Tailscale users may use aseprite-mcp.",
-      });
+    const auth = classifyRequest(req, port, tailnet, remoteToken);
+    if (!("access" in auth)) {
+      sendJson(
+        res,
+        auth.status,
+        { error: auth.error },
+        auth.status === 401 ? { "www-authenticate": "Bearer" } : undefined
+      );
       return;
     }
+    const { access } = auth;
     const { link, backups, execute } = await ready;
-    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    const url = new URL(
+      req.url ?? "/",
+      `http://${req.headers.host || `${HOST}:${port}`}`
+    );
     if (url.pathname === "/health" && req.method === "GET") {
       sendJson(res, 200, {
         autosave: backups.info(),
@@ -366,8 +482,8 @@ export const startDaemon = async ({
     res.on("close", () => transport.close());
     await mcpServer(
       { description: program.DESCRIPTION, execute, version },
-      // Tailnet callers run on other machines and cannot open the view paths.
-      access === "tailnet" || url.searchParams.get("images") === "inline"
+      // Remote callers run on other machines and cannot open local view paths.
+      access !== "loopback" || url.searchParams.get("images") === "inline"
     ).connect(transport);
     await transport.handleRequest(req, res, body);
   };
@@ -386,6 +502,6 @@ export const startDaemon = async ({
   });
 
   await ready;
-  log?.(`aseprite-mcp ${version} on http://${HOST}:${port}/mcp`);
+  log?.(`aseprite-mcp ${version} on http://${httpHost}:${port}/mcp`);
   return { close, port };
 };

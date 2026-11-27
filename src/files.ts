@@ -25,6 +25,8 @@ import type { Link } from "./link.ts";
 export interface WorkspaceConfig {
   tokenEnv: string | null;
   tokenFile: string;
+  remoteTokenEnv: string | null;
+  remoteTokenFile: string;
   palettesFile: string;
   libDir: string | null;
   spritesDir: string | null;
@@ -64,6 +66,10 @@ export interface Workspace {
   readonly autosaveDir: string | null;
   resolvePath: (p: unknown, defaultExt?: string) => Promise<string>;
   loadToken: (opts?: {
+    create?: boolean;
+    renew?: boolean;
+  }) => Promise<string | null>;
+  loadRemoteToken: (opts?: {
     create?: boolean;
     renew?: boolean;
   }) => Promise<string | null>;
@@ -132,6 +138,10 @@ export const workspaceConfigFromEnv = (
     libDir: env.ASEPRITE_MCP_LIB_DIR ?? path.join(configDir, "lib"),
     palettesFile:
       env.ASEPRITE_MCP_PALETTE_FILE ?? path.join(configDir, "palettes.json"),
+    remoteTokenEnv: env.ASEPRITE_MCP_REMOTE_TOKEN || null,
+    remoteTokenFile:
+      env.ASEPRITE_MCP_REMOTE_TOKEN_FILE ??
+      path.join(configDir, "remote-token"),
     spritesDir,
     tokenEnv: env.ASEPRITE_MCP_TOKEN || null,
     tokenFile: env.ASEPRITE_MCP_TOKEN_FILE ?? path.join(configDir, "token"),
@@ -175,6 +185,38 @@ const writeTokenFile = async (file: string, token: string): Promise<void> => {
   await writeFile(file, `${token}\n`, { mode: 0o600 });
   // writeFile keeps the mode of a file that already exists.
   await chmod(file, 0o600);
+};
+
+const loadSecret = async (
+  tokenEnv: string | null,
+  tokenFile: string,
+  { create = true, renew = false }: { create?: boolean; renew?: boolean } = {}
+): Promise<string | null> => {
+  if (renew) {
+    const token = newToken();
+    await writeTokenFile(tokenFile, token);
+    return token;
+  }
+  if (tokenEnv) {
+    return tokenEnv;
+  }
+  try {
+    const text = await readFile(tokenFile, "utf-8");
+    const token = text.trim();
+    if (token) {
+      return token;
+    }
+  } catch (error) {
+    if (!isMissing(error)) {
+      throw error;
+    }
+  }
+  if (!create) {
+    return null;
+  }
+  const token = newToken();
+  await writeTokenFile(tokenFile, token);
+  return token;
 };
 
 const readPalettesFile = async (
@@ -250,36 +292,16 @@ export const createWorkspace = (
     return real;
   };
 
-  const loadToken = async ({
-    create = true,
-    renew = false,
-  }: { create?: boolean; renew?: boolean } = {}): Promise<string | null> => {
-    if (renew) {
-      const token = newToken();
-      await writeTokenFile(cfg.tokenFile, token);
-      return token;
-    }
-    if (cfg.tokenEnv) {
-      return cfg.tokenEnv;
-    }
-    try {
-      const text = await readFile(cfg.tokenFile, "utf-8");
-      const token = text.trim();
-      if (token) {
-        return token;
-      }
-    } catch (error) {
-      if (!isMissing(error)) {
-        throw error;
-      }
-    }
-    if (!create) {
-      return null;
-    }
-    const token = newToken();
-    await writeTokenFile(cfg.tokenFile, token);
-    return token;
-  };
+  const loadToken = (opts?: {
+    create?: boolean;
+    renew?: boolean;
+  }): Promise<string | null> => loadSecret(cfg.tokenEnv, cfg.tokenFile, opts);
+
+  const loadRemoteToken = (opts?: {
+    create?: boolean;
+    renew?: boolean;
+  }): Promise<string | null> =>
+    loadSecret(cfg.remoteTokenEnv, cfg.remoteTokenFile, opts);
 
   const saveView = async (spriteName: string, png: Buffer): Promise<string> => {
     await mkdir(cfg.viewsDir, { recursive: true });
@@ -496,6 +518,7 @@ export const createWorkspace = (
     createBackups,
     libDir: cfg.libDir,
     loadPalette,
+    loadRemoteToken,
     loadToken,
     pruneViews,
     resolvePath,

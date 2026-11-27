@@ -82,9 +82,14 @@ export const rawRequest = (
   path: string,
   headers: Record<string, string>,
   body?: unknown
-): Promise<{ status: number | undefined; body: string }> => {
+): Promise<{
+  status: number | undefined;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}> => {
   const { promise, resolve, reject } = Promise.withResolvers<{
     status: number | undefined;
+    headers: Record<string, string | string[] | undefined>;
     body: string;
   }>();
   const req = request(
@@ -92,7 +97,9 @@ export const rawRequest = (
     (res) => {
       let text = "";
       res.on("data", (d: Buffer) => (text += d));
-      res.on("end", () => resolve({ body: text, status: res.statusCode }));
+      res.on("end", () =>
+        resolve({ body: text, headers: res.headers, status: res.statusCode })
+      );
     }
   );
   req.on("error", reject);
@@ -102,12 +109,13 @@ export const rawRequest = (
 
 /** Runs `aseprite-mcp serve`; resolves with the child and a promise of its exit code. */
 export const serve = (
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  args: string[] = []
 ): {
   child: ChildProcess;
   exited: Promise<{ code: number | null; stderr: string }>;
 } => {
-  const child = spawn(process.execPath, [BIN, "serve"], {
+  const child = spawn(process.execPath, [BIN, "serve", ...args], {
     env,
     stdio: ["ignore", "ignore", "pipe"],
   });

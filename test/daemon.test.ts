@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { startDaemon } from "../src/daemon.ts";
+import { isLoopbackAddress, startDaemon } from "../src/daemon.ts";
 import type { Daemon } from "../src/daemon.ts";
 import { createWorkspace } from "../src/files.ts";
 import type { Link } from "../src/link.ts";
@@ -228,4 +228,166 @@ test("POST /shutdown stops the daemon cleanly", async () => {
   assert.equal(shutdownCalled, true);
   const down = await fetch(`${base}/health`).catch(() => null);
   assert.equal(down, null);
+});
+
+test("isLoopbackAddress distinguishes loopback from network addresses", () => {
+  for (const addr of [
+    "127.0.0.1",
+    "127.0.0.42",
+    "::1",
+    "[::1]",
+    "::ffff:127.0.0.1",
+    "localhost",
+  ]) {
+    assert.equal(isLoopbackAddress(addr), true, addr);
+  }
+  for (const addr of [
+    "0.0.0.0",
+    "::",
+    "100.64.0.1",
+    "192.168.1.5",
+    "::ffff:10.0.0.1",
+    "",
+    undefined,
+  ]) {
+    assert.equal(isLoopbackAddress(addr), false, String(addr));
+  }
+});
+
+test("startDaemon refuses a non-loopback HTTP host without a remote token, or a short token", async () => {
+  const workspace = createWorkspace({ autosaveDir: null, viewsDir });
+  await assert.rejects(
+    startDaemon({
+      httpHost: "0.0.0.0",
+      httpPort: 0,
+      link: disconnectedLink(),
+      program: fakeProgram,
+      version: VERSION,
+      workspace,
+      wsPort: 0,
+    }),
+    /requires a remote token/u
+  );
+  await assert.rejects(
+    startDaemon({
+      httpHost: "0.0.0.0",
+      httpPort: 0,
+      link: disconnectedLink(),
+      program: fakeProgram,
+      remoteToken: "short",
+      version: VERSION,
+      workspace,
+      wsPort: 0,
+    }),
+    /at least 16 characters/u
+  );
+});
+
+test("remote bearer mode authenticates remote callers, inlines views, blocks cross-site requests and refuses shutdown", async () => {
+  const remoteToken = "r".repeat(48);
+  const remoteDir = mkdtempSync(nodePath.join(tmpdir(), "mcp-remote-"));
+  const remoteViewsDir = nodePath.join(remoteDir, "views");
+  const workspace = createWorkspace({
+    allowedDirs: [remoteDir],
+    autosaveDir: null,
+    libDir: null,
+    palettesFile: nodePath.join(remoteDir, "palettes.json"),
+    spritesDir: remoteDir,
+    tokenEnv: "t".repeat(48),
+    tokenFile: nodePath.join(remoteDir, "token"),
+    viewsDir: remoteViewsDir,
+  });
+  const remoteDaemon = await startDaemon({
+    httpHost: "0.0.0.0",
+    httpPort: 0,
+    link: disconnectedLink(),
+    program: fakeProgram,
+    remoteToken,
+    version: VERSION,
+    workspace,
+    wsPort: 0,
+  });
+  assert.ok(remoteDaemon);
+  const { port } = remoteDaemon;
+  const remoteHost = `mybox.lan:${port}`;
+  try {
+    // Loopback callers still work without a bearer token and get paths only.
+    const localHealth = await rawRequest(port, "GET", "/health", {
+      host: `127.0.0.1:${port}`,
+    });
+    assert.equal(localHealth.status, 200);
+
+    // Non-loopback Host without or with wrong bearer token gets 401 + WWW-Authenticate.
+    const missing = await rawRequest(port, "GET", "/health", {
+      host: remoteHost,
+    });
+    assert.equal(missing.status, 401);
+    assert.equal(missing.headers["www-authenticate"], "Bearer");
+
+    const wrong = await rawRequest(port, "GET", "/health", {
+      authorization: `Bearer ${"x".repeat(48)}`,
+      host: remoteHost,
+    });
+    assert.equal(wrong.status, 401);
+
+    // Valid bearer token accesses /health and gets inline PNG blocks on /mcp.
+    const okHealth = await rawRequest(port, "GET", "/health", {
+      authorization: `Bearer ${remoteToken}`,
+      host: remoteHost,
+    });
+    assert.equal(okHealth.status, 200);
+
+    const mcp = await rawRequest(
+      port,
+      "POST",
+      "/mcp",
+      {
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${remoteToken}`,
+        "content-type": "application/json",
+        host: remoteHost,
+      },
+      {
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { arguments: { code: "view" }, name: "execute" },
+      }
+    );
+    assert.equal(mcp.status, 200, mcp.body);
+    const [text, image, ...extra] = JSON.parse(mcp.body).result
+      .content as Block[];
+    const [imgPath] = JSON.parse(text?.text ?? "").images;
+    assert.deepEqual(image, {
+      data: readFileSync(imgPath).toString("base64"),
+      mimeType: "image/png",
+      type: "image",
+    });
+    assert.deepEqual(extra, []);
+
+    // Cross-site Origin and Sec-Fetch-Site are rejected even with a valid bearer token.
+    const foreignOrigin = await rawRequest(port, "GET", "/health", {
+      authorization: `Bearer ${remoteToken}`,
+      host: remoteHost,
+      origin: "https://evil.example",
+    });
+    assert.equal(foreignOrigin.status, 403);
+
+    const crossSite = await rawRequest(port, "GET", "/health", {
+      authorization: `Bearer ${remoteToken}`,
+      host: remoteHost,
+      "sec-fetch-site": "cross-site",
+    });
+    assert.equal(crossSite.status, 403);
+
+    // Remote bearer callers cannot stop the daemon.
+    const stop = await rawRequest(port, "POST", "/shutdown", {
+      authorization: `Bearer ${remoteToken}`,
+      host: remoteHost,
+    });
+    assert.equal(stop.status, 403);
+  } finally {
+    await remoteDaemon.close();
+    rmSync(remoteDir, { force: true, recursive: true });
+  }
 });

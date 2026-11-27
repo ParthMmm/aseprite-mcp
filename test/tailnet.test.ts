@@ -1,21 +1,29 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import type { NetworkInterfaceInfo } from "node:os";
 import nodePath from "node:path";
-// Tailnet access: in-process daemon tests for `tailscale serve` request admission and inline images,
-// plus CLI validation tests and pure config functions behind `serve --tailscale`.
+// Tailnet and remote access: in-process daemon tests for `tailscale serve` request admission and inline images,
+// plus CLI validation tests and pure config functions behind `serve --tailscale` and `serve --remote`.
 import { after, before, test } from "node:test";
+import { promisify } from "node:util";
 
 import { startDaemon } from "../src/daemon.ts";
 import type { Daemon } from "../src/daemon.ts";
 import { createWorkspace } from "../src/files.ts";
 import type { Link } from "../src/link.ts";
 import {
+  MAC_TAILSCALE_APP,
+  collectAddresses,
+  isTailnetIp,
   resolveTailnet,
   tailnetEnvComplete,
   tailnetFromStatus,
+  tailscaleCandidates,
 } from "../src/tailnet.ts";
 import {
+  BIN,
   isolatedEnv,
   rawRequest,
   serve,
@@ -278,4 +286,107 @@ test("tailnetEnvComplete is true only when the environment sets both the Host an
   assert.equal(tailnetEnvComplete({ host: TAILNET_HOST, users: ALICE }), true);
   assert.equal(tailnetEnvComplete({ host: TAILNET_HOST, users: " , " }), false);
   assert.equal(tailnetEnvComplete({ users: ALICE }), false);
+});
+
+const iface = (
+  address: string,
+  family: "IPv4" | "IPv6" = "IPv4",
+  internal = false
+): NetworkInterfaceInfo =>
+  ({
+    address,
+    cidr: `${address}/24`,
+    family,
+    internal,
+    mac: "00:00:00:00:00:00",
+    netmask: "255.255.255.0",
+  }) as NetworkInterfaceInfo;
+
+test("isTailnetIp matches 100.64.0.0/10 only", () => {
+  assert.equal(isTailnetIp("100.64.0.1"), true);
+  assert.equal(isTailnetIp("100.127.255.254"), true);
+  assert.equal(isTailnetIp("100.63.255.255"), false);
+  assert.equal(isTailnetIp("100.128.0.1"), false);
+  assert.equal(isTailnetIp("192.168.1.10"), false);
+  assert.equal(isTailnetIp("127.0.0.1"), false);
+  assert.equal(isTailnetIp("::1"), false);
+});
+
+test("collectAddresses detects Tailscale and LAN IPs on both Linux and macOS interfaces", () => {
+  const linux = collectAddresses({
+    "br-1a2b3c": [iface("172.18.0.1")],
+    docker0: [iface("172.17.0.1")],
+    enp5s0: [iface("192.168.1.42"), iface("fe80::1", "IPv6")],
+    lo: [iface("127.0.0.1", "IPv4", true)],
+    tailscale0: [iface("100.88.1.2")],
+    veth99: [iface("172.19.0.2")],
+    wg0: [iface("10.10.0.2")],
+  });
+  assert.deepEqual(linux, {
+    lan: ["192.168.1.42", "10.10.0.2"],
+    tailnet: ["100.88.1.2"],
+  });
+
+  // On macOS Tailscale runs on a utun interface; non-tailnet utun and Apple internal interfaces are skipped.
+  const macos = collectAddresses({
+    anpi0: [iface("169.254.10.1")],
+    awdl0: [iface("10.0.99.1")],
+    bridge0: [iface("192.168.64.1")],
+    en0: [iface("192.168.1.20"), iface("169.254.1.2")],
+    llw0: [iface("10.0.99.2")],
+    lo0: [iface("127.0.0.1", "IPv4", true)],
+    utun0: [iface("10.9.0.1")],
+    utun4: [iface("100.99.4.5")],
+  });
+  assert.deepEqual(macos, {
+    lan: ["192.168.1.20"],
+    tailnet: ["100.99.4.5"],
+  });
+});
+
+test("tailscaleCandidates adds the macOS app bundle fallback only on darwin when present", () => {
+  assert.deepEqual(
+    tailscaleCandidates("darwin", () => true),
+    ["tailscale", MAC_TAILSCALE_APP]
+  );
+  assert.deepEqual(
+    tailscaleCandidates("darwin", () => false),
+    ["tailscale"]
+  );
+  assert.deepEqual(
+    tailscaleCandidates("linux", () => true),
+    ["tailscale"]
+  );
+});
+
+const execFileAsync = promisify(execFile);
+
+test("CLI `token --remote` and `serve --remote` wire bearer auth end to end", async () => {
+  const remoteCtx = await isolatedEnv();
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [BIN, "token", "--remote"],
+      { env: remoteCtx.env }
+    );
+    const remoteToken = stdout.trim();
+    assert.equal(remoteToken.length, 48);
+    assert.notEqual(remoteToken, remoteCtx.env.ASEPRITE_MCP_TOKEN);
+
+    serve(remoteCtx.env, ["--remote"]);
+    await waitForHealth(remoteCtx.base);
+
+    const denied = await rawRequest(remoteCtx.httpPort, "GET", "/health", {
+      host: `box.lan:${remoteCtx.httpPort}`,
+    });
+    assert.equal(denied.status, 401);
+
+    const allowed = await rawRequest(remoteCtx.httpPort, "GET", "/health", {
+      authorization: `Bearer ${remoteToken}`,
+      host: `box.lan:${remoteCtx.httpPort}`,
+    });
+    assert.equal(allowed.status, 200);
+  } finally {
+    await remoteCtx.cleanup();
+  }
 });

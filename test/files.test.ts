@@ -53,6 +53,8 @@ const tempWorkspace = (
     autosaveDir: nodePath.join(dir, "autosave"),
     libDir: nodePath.join(dir, "lib"),
     palettesFile: nodePath.join(dir, "nested", "palettes.json"),
+    remoteTokenEnv: null,
+    remoteTokenFile: nodePath.join(dir, "remote-token"),
     spritesDir,
     tokenEnv: null,
     tokenFile: nodePath.join(dir, "token"),
@@ -96,6 +98,24 @@ test("loadToken creates, reuses, renews and honours env override", async (t) => 
     tokenFile: nodePath.join(dir, "unused"),
   });
   assert.equal(await fromEnv.loadToken(), "env-token-value");
+});
+
+test("loadRemoteToken stays separate from loadToken and honours env override", async (t) => {
+  const { dir, ws } = tempWorkspace(t, { remoteTokenEnv: null });
+  const pairing = await ws.loadToken();
+  assert.equal(await ws.loadRemoteToken({ create: false }), null);
+  const first = await ws.loadRemoteToken();
+  assert.ok(first && first.length === 48);
+  assert.notEqual(first, pairing);
+  assert.equal(await ws.loadRemoteToken(), first);
+  const renewed = await ws.loadRemoteToken({ renew: true });
+  assert.ok(renewed && renewed !== first);
+
+  const fromEnv = createWorkspace({
+    remoteTokenEnv: "remote-env-token-value",
+    remoteTokenFile: nodePath.join(dir, "unused-remote"),
+  });
+  assert.equal(await fromEnv.loadRemoteToken(), "remote-env-token-value");
 });
 
 test("saveView and pruneViews keep only the newest viewsKeep PNGs", async (t) => {

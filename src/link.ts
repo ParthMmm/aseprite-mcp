@@ -2,6 +2,7 @@
 // Text frames carry plain JSON; a message with byte blobs travels as one binary frame (see wire.ts).
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { once } from "node:events";
+import type { IncomingMessage } from "node:http";
 import { env } from "node:process";
 
 import { WebSocketServer } from "ws";
@@ -14,11 +15,14 @@ export const NOT_CONNECTED =
   "Aseprite is not connected: open File > Aseprite MCP... and press Connect";
 
 const HELLO_DEADLINE_MS = 5000;
+const LIVENESS_TIMEOUT_MS = 10_000;
+const CLOSE_TOO_LARGE = 1009;
 const CLOSE_REPLACED = 4000;
 const CLOSE_NO_HELLO = 4001;
 const CLOSE_DENIED = 4003;
 const LONG_COMMANDS = new Set(["snapshot", "commit"]);
 const MAX_PAYLOAD = 256 * 1024 * 1024;
+const MAX_PRE_AUTH_BYTES = 64 * 1024;
 
 export interface LinkReply<T = unknown> {
   result: T;
@@ -52,6 +56,8 @@ export interface LinkOptions {
   host?: string;
   timeoutMs?: number;
   longTimeoutMs?: number;
+  livenessTimeoutMs?: number;
+  maxPreAuthBytes?: number;
   retryMs?: number;
   autosaveDir?: string | null;
   log?: (...args: unknown[]) => void;
@@ -139,6 +145,8 @@ export const createLink = ({
   host = "127.0.0.1",
   timeoutMs = Number(env.ASEPRITE_MCP_TIMEOUT) || 15_000,
   longTimeoutMs = Math.max(60_000, timeoutMs),
+  livenessTimeoutMs = LIVENESS_TIMEOUT_MS,
+  maxPreAuthBytes = MAX_PRE_AUTH_BYTES,
   retryMs = 2000,
   autosaveDir = null,
   log,
@@ -156,6 +164,7 @@ export const createLink = ({
   let error: string | null = null;
   let nextId = 1;
   const pending = new Map<number, Pending>();
+  const probes = new WeakMap<WebSocket, () => void>();
   const { promise: listening, resolve: markListening } =
     Promise.withResolvers<boolean>();
 
@@ -231,15 +240,48 @@ export const createLink = ({
     return true;
   };
 
-  const onConnection = (ws: WebSocket): void => {
+  const onConnection = (ws: WebSocket, req: IncomingMessage): void => {
+    // Native Aseprite never sends an Origin header; rejecting browser origins blocks cross-site WebSocket hijacking.
+    if (req.headers.origin) {
+      log?.(`Rejected extension socket with Origin ${req.headers.origin}.`);
+      deny(ws);
+      return;
+    }
     const challenge = randomBytes(16).toString("hex");
     let paired = false;
+    let livenessTimer: NodeJS.Timeout | undefined;
+    const clearLiveness = (): void => {
+      if (livenessTimer) {
+        clearTimeout(livenessTimer);
+        livenessTimer = undefined;
+      }
+    };
+    const probeLiveness = (): void => {
+      if (livenessTimer || ws.readyState !== ws.OPEN) {
+        return;
+      }
+      livenessTimer = setTimeout(() => {
+        livenessTimer = undefined;
+        log?.("Aseprite socket did not answer liveness ping; closing.");
+        ws.terminate();
+      }, livenessTimeoutMs);
+      livenessTimer.unref();
+      try {
+        ws.ping();
+      } catch {
+        clearLiveness();
+        ws.terminate();
+      }
+    };
+    probes.set(ws, probeLiveness);
+    ws.on("pong", clearLiveness);
     const deadline = setTimeout(
       () => ws.close(CLOSE_NO_HELLO, "no hello"),
       HELLO_DEADLINE_MS
     );
     ws.once("close", () => {
       clearTimeout(deadline);
+      clearLiveness();
       for (const [key, entry] of pending) {
         if (entry.ws === ws) {
           settle(key, (p) =>
@@ -265,6 +307,13 @@ export const createLink = ({
               ? decodeFrame(data)
               : { blobs: [], msg: JSON.parse(data.toString()) }
           );
+        }
+        if (data.byteLength > maxPreAuthBytes) {
+          log?.(
+            `Closed unpaired socket: message too large (${data.byteLength} bytes).`
+          );
+          ws.close(CLOSE_TOO_LARGE, "message too large");
+          return;
         }
         if (isBinary) {
           return deny(ws);
@@ -323,13 +372,12 @@ export const createLink = ({
     nextId += 1;
     const ms = LONG_COMMANDS.has(cmd) ? longTimeoutMs : timeoutMs;
     const { promise, resolve, reject } = Promise.withResolvers<LinkReply>();
-    const timer = setTimeout(
-      () =>
-        settle(id, (p) =>
-          p.reject(new Error(`Timeout while running '${cmd}' (${ms} ms).`))
-        ),
-      ms
-    );
+    const timer = setTimeout(() => {
+      probes.get(ws)?.();
+      settle(id, (p) =>
+        p.reject(new Error(`Timeout while running '${cmd}' (${ms} ms).`))
+      );
+    }, ms);
     pending.set(id, { reject, resolve, timer, ws });
     const msg = { args, cmd, id };
     ws.send(
@@ -362,7 +410,7 @@ export const createLink = ({
     listening,
     request,
     status: () => ({
-      connected: current !== null,
+      connected: current !== null && current.readyState === current.OPEN,
       error,
       extension,
       port: boundPort,

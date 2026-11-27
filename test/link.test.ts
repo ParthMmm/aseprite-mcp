@@ -28,6 +28,8 @@ interface ExtensionReply {
 interface ExtensionOptions {
   token?: string;
   extension?: string;
+  autoPong?: boolean;
+  headers?: Record<string, string>;
   onRequest?: (msg: WireMessage, blobs: Uint8Array[]) => ExtensionReply | null;
 }
 
@@ -37,11 +39,13 @@ const fakeExtension = async (
   {
     token = TOKEN,
     extension = "0.1.0",
+    autoPong = true,
+    headers,
     onRequest = () => ({ result: {} }),
   }: ExtensionOptions = {}
 ) => {
   const url = `ws://127.0.0.1:${port}`;
-  const ws = new WebSocket(url);
+  const ws = new WebSocket(url, { autoPong, headers });
   const clientNonce = randomBytes(16).toString("hex");
   const reply = (msg: WireMessage, blobs: Uint8Array[]) => {
     const out = onRequest(msg, blobs);
@@ -238,3 +242,48 @@ test("a busy port is a retrying status, then the link binds once the port frees"
     await link.close();
   }
 });
+
+test("unpaired sockets sending oversized messages are closed with 1009", () =>
+  withLink({ maxPreAuthBytes: 128 }, async (link) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${link.status().port}`);
+    const closed = once(ws, "close");
+    await once(ws, "open");
+    ws.send("x".repeat(256));
+    const [code] = await closed;
+    assert.equal(code, 1009);
+    assert.equal(link.status().connected, false);
+  }));
+
+test("sockets with a browser Origin header are denied", () =>
+  withLink({}, async (link) => {
+    const { ws, outcome } = await fakeExtension(link.status().port, {
+      headers: { origin: "https://evil.example" },
+    });
+    assert.equal(outcome, "denied");
+    assert.equal(link.status().connected, false);
+    ws.close();
+  }));
+
+test("a timeout probes liveness with Ping/Pong and closes an unresponsive socket", () =>
+  withLink({ livenessTimeoutMs: 80, timeoutMs: 40 }, async (link) => {
+    // Alive socket answers Ping with Pong and stays connected after a slow command times out.
+    const alive = await fakeExtension(link.status().port, {
+      autoPong: true,
+      onRequest: () => null,
+    });
+    await assert.rejects(link.request("info"), /Timeout/u);
+    await sleep(120);
+    assert.equal(link.status().connected, true);
+    alive.ws.close();
+    await once(alive.ws, "close");
+
+    // Dead socket ignores Ping and is dropped once livenessTimeoutMs elapses.
+    const dead = await fakeExtension(link.status().port, {
+      autoPong: false,
+      onRequest: () => null,
+    });
+    const closed = once(dead.ws, "close");
+    await assert.rejects(link.request("info"), /Timeout/u);
+    await closed;
+    assert.equal(link.status().connected, false);
+  }));

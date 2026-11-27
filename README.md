@@ -86,6 +86,25 @@ To stop serving the daemon to the tailnet, run `tailscale serve --https=9124 off
 
 If you run `tailscale serve` yourself, start the daemon with plain `serve` and set both `ASEPRITE_MCP_TAILNET_HOST` and `ASEPRITE_MCP_TAILNET_USERS`. `ASEPRITE_MCP_TAILNET_HOST` is the `Host` header the proxy forwards, such as `machine.example-tailnet.ts.net:9124`.
 
+### Use it from other machines without Tailscale Serve
+
+On a LAN, WireGuard, Tailscale without Serve, or behind your own TLS reverse proxy, start the daemon with `--remote`:
+
+```sh
+node bin/aseprite-mcp.ts serve --remote
+```
+
+The daemon binds HTTP to `0.0.0.0` (or `ASEPRITE_MCP_HTTP_HOST`), prints this machine's reachable Tailscale and LAN URLs, and requires `Authorization: Bearer <token>` from remote callers. Print or rotate the remote bearer token with:
+
+```sh
+node bin/aseprite-mcp.ts token --remote
+node bin/aseprite-mcp.ts token --remote --new
+```
+
+The remote bearer token is separate from the Aseprite pairing token and lives in `~/.config/aseprite-mcp/remote-token` (or `ASEPRITE_MCP_REMOTE_TOKEN`). Remote bearer callers get inline view images and cannot stop the daemon, while local loopback callers on `127.0.0.1` keep working without a header.
+
+Plain HTTP is not encrypted by `aseprite-mcp`. Use `--remote` over Tailscale, WireGuard, or a trusted LAN, or keep `ASEPRITE_MCP_HTTP_HOST=127.0.0.1` with `ASEPRITE_MCP_REMOTE_TOKEN` behind a TLS reverse proxy.
+
 ### Start the daemon at login on macOS
 
 Save this as `~/Library/LaunchAgents/com.parthmmm.aseprite-mcp.plist`. Replace both paths: the first is your `node` or `bun` binary (`which bun`), the second is your clone.
@@ -162,11 +181,14 @@ Set these environment variables for the daemon.
 
 | Variable | Default |
 | --- | --- |
+| `ASEPRITE_MCP_HTTP_HOST` | `127.0.0.1` (`0.0.0.0` with `serve --remote`) |
 | `ASEPRITE_MCP_HTTP_PORT` | `9124` |
 | `ASEPRITE_MCP_PORT` | `9123` (WebSocket port for the extension) |
 | `ASEPRITE_MCP_TIMEOUT` | `15000` ms per command (at least 60000 for snapshot and commit) |
 | `ASEPRITE_MCP_TOKEN` | Token file |
 | `ASEPRITE_MCP_TOKEN_FILE` | `~/.config/aseprite-mcp/token` |
+| `ASEPRITE_MCP_REMOTE_TOKEN` | Remote token file (only used with `--remote`, non-loopback `ASEPRITE_MCP_HTTP_HOST`, or when set) |
+| `ASEPRITE_MCP_REMOTE_TOKEN_FILE` | `~/.config/aseprite-mcp/remote-token` |
 | `ASEPRITE_MCP_PALETTE_FILE` | `~/.config/aseprite-mcp/palettes.json` |
 | `ASEPRITE_MCP_LIB_DIR` | `~/.config/aseprite-mcp/lib`, where `lib(name, code)` saves helper code |
 | `ASEPRITE_MCP_SPRITES_DIR` | `~/Pictures/aseprite-mcp`, where `s.save("name")` writes |
@@ -268,8 +290,8 @@ return await s.export("slime", { scale: 4, gif: true, columns: 4 });
 
 ## Safety
 
-- The daemon listens on loopback addresses only (`127.0.0.1`). With tailnet access on, it also accepts requests that `tailscale serve` forwards for the allowed Tailscale users.
-- Aseprite and the daemon pair with a shared token. Each side proves it knows the token with an HMAC-SHA256 exchange, and the extension checks the server too. The token never crosses the connection.
+- The daemon listens on loopback addresses only (`127.0.0.1`) by default. With `serve --tailscale`, it also accepts requests that `tailscale serve` forwards for the allowed Tailscale users. With `serve --remote` (or a non-loopback `ASEPRITE_MCP_HTTP_HOST`), it requires `Authorization: Bearer <token>` from remote callers, rejects cross-site browser requests, and keeps `/shutdown` loopback-only.
+- Aseprite and the daemon pair with a shared token. Each side proves it knows the token with an HMAC-SHA256 exchange, and the extension checks the server too. The token never crosses the connection, unpaired WebSocket messages are capped at 64 KiB, and browser origins are rejected on the extension socket.
 - A program can read and write files only inside the allowed folders: by default `~/Pictures/aseprite-mcp` and the temporary directories. Set `ASEPRITE_MCP_FILE_DIRS` to change it.
 - Each program runs in a sandboxed interpreter (`psychoscript`). Defaults: 60 seconds, 64,000 bytes of output and a 64 MB draft.
 - The daemon saves backup copies after each commit and removes old ones by count, age and size.

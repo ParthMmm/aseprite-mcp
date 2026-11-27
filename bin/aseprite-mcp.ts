@@ -5,10 +5,12 @@ import { env, argv, exit, stderr, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 
 import { messageOf } from "../src/check.ts";
+import { isLoopbackAddress } from "../src/daemon.ts";
 import type { Program } from "../src/daemon.ts";
 import { createWorkspace } from "../src/files.ts";
 import { health, runProxy, shutdown } from "../src/stdio-proxy.ts";
 import {
+  detectRemoteAddresses,
   detectTailnet,
   resolveTailnet,
   serveOnTailnet,
@@ -36,16 +38,24 @@ Commands:
   serve --tailscale
                 Also serve it to your tailnet with \`tailscale serve\`, open to
                 this machine's owner.
+  serve --remote
+                Bind HTTP on all interfaces (0.0.0.0) and require
+                \`Authorization: Bearer <token>\` for remote callers.
   status        Print the daemon's health as JSON. Exits 1 when no daemon answers.
   stop          Ask the running daemon to shut down.
   token         Print the pairing token for the Aseprite extension.
   token --new   Replace the pairing token and print it.
+  token --remote
+                Print the remote HTTP bearer token (add --new to replace it).
   help          Show this text.
 
 Environment:
+  ASEPRITE_MCP_HTTP_HOST  daemon HTTP bind address (default 127.0.0.1; 0.0.0.0 with --remote)
   ASEPRITE_MCP_HTTP_PORT  daemon HTTP port (default 9124)
   ASEPRITE_MCP_PORT       WebSocket port the extension connects to (default 9123)
-  ASEPRITE_MCP_TOKEN      use this token instead of the token file
+  ASEPRITE_MCP_TOKEN      use this pairing token instead of the token file
+  ASEPRITE_MCP_REMOTE_TOKEN
+                          use this bearer token for remote HTTP callers instead of the remote-token file
   ASEPRITE_MCP_TAILNET_HOST
                           the Host header tailnet requests carry, such as
                           machine.example-tailnet.ts.net:9124
@@ -53,8 +63,46 @@ Environment:
                           comma-separated Tailscale logins allowed in
 `;
 
+const isWildcard = (host: string): boolean =>
+  host === "0.0.0.0" || host === "::" || host === "[::]";
+
+const logRemoteUrls = async (httpHost: string, port: number): Promise<void> => {
+  if (isWildcard(httpHost)) {
+    const { tailnet, lan } = await detectRemoteAddresses(port);
+    for (const host of tailnet) {
+      log(`Remote (Tailscale): http://${host}/mcp`);
+    }
+    for (const host of lan) {
+      log(`Remote (LAN): http://${host}/mcp`);
+    }
+    if (tailnet.length === 0 && lan.length === 0) {
+      log(`Remote: http://<this-machine>:${port}/mcp`);
+    }
+    log(
+      "Plain HTTP: use over Tailscale, WireGuard, or a trusted LAN, not the open internet."
+    );
+  } else if (isLoopbackAddress(httpHost)) {
+    log("Remote bearer auth enabled on loopback (for reverse proxies).");
+  } else {
+    log(`Remote: http://${httpHost}:${port}/mcp`);
+    log(
+      "Plain HTTP: use over Tailscale, WireGuard, or a trusted LAN, not the open internet."
+    );
+  }
+  log(
+    "Auth: Authorization: Bearer <token> (run `aseprite-mcp token --remote` to print it)"
+  );
+};
+
 const serve = async (args: string[]): Promise<void> => {
   const tailscale = args.includes("--tailscale");
+  const remoteFlag = args.includes("--remote");
+  const envHost = env.ASEPRITE_MCP_HTTP_HOST?.trim();
+  const httpHost = envHost || (remoteFlag ? "0.0.0.0" : "127.0.0.1");
+  const remote =
+    remoteFlag ||
+    Boolean(env.ASEPRITE_MCP_REMOTE_TOKEN) ||
+    !isLoopbackAddress(httpHost);
   const tailnetEnv = {
     host: env.ASEPRITE_MCP_TAILNET_HOST,
     users: env.ASEPRITE_MCP_TAILNET_USERS,
@@ -70,27 +118,45 @@ const serve = async (args: string[]): Promise<void> => {
     log(messageOf(error));
     return exit(1);
   }
+  const workspace = createWorkspace();
+  let remoteToken: string | null = null;
+  if (remote) {
+    try {
+      remoteToken = await workspace.loadRemoteToken();
+    } catch (error) {
+      log(messageOf(error));
+      return exit(1);
+    }
+  }
   const program: Program = await import(
     env.ASEPRITE_MCP_PROGRAM
       ? pathToFileURL(env.ASEPRITE_MCP_PROGRAM).href
       : "../src/program.ts"
   );
   const { startDaemon } = await import("../src/daemon.ts");
-  const daemon = await startDaemon({
-    httpPort,
-    log,
-    onShutdown: () => exit(0),
-    program,
-    tailnet,
-    version,
-    workspace: createWorkspace(),
-    wsPort,
-  });
+  let daemon: Awaited<ReturnType<typeof startDaemon>>;
+  try {
+    daemon = await startDaemon({
+      httpHost,
+      httpPort,
+      log,
+      onShutdown: () => exit(0),
+      program,
+      remoteToken,
+      tailnet,
+      version,
+      workspace,
+      wsPort,
+    });
+  } catch (error) {
+    log(messageOf(error));
+    return exit(1);
+  }
   if (!daemon) {
     log(`A daemon already answers on port ${httpPort}; leaving it running.`);
-    if (tailnet) {
+    if (tailnet || remote) {
       log(
-        "That daemon may not have tailnet access. Run `aseprite-mcp stop`, then start it again."
+        "That daemon may not have remote or tailnet access. Run `aseprite-mcp stop`, then start it again."
       );
       return exit(1);
     }
@@ -109,6 +175,9 @@ const serve = async (args: string[]): Promise<void> => {
     log(
       `Tailnet: https://${tailnet.host}/mcp for ${[...tailnet.users].join(", ")}`
     );
+  }
+  if (remote) {
+    await logRemoteUrls(httpHost, daemon.port);
   }
   const stop = async (): Promise<void> => {
     try {
@@ -146,10 +215,17 @@ const stopDaemon = async (): Promise<void> => {
 
 const token = async (rest: string[]): Promise<void> => {
   const renew = rest.includes("--new");
-  stdout.write(`${await createWorkspace().loadToken({ renew })}\n`);
+  const isRemote = rest.includes("--remote");
+  const workspace = createWorkspace();
+  const value = isRemote
+    ? await workspace.loadRemoteToken({ renew })
+    : await workspace.loadToken({ renew });
+  stdout.write(`${value}\n`);
   if (renew) {
     log(
-      "New token saved. Paste it into the Aseprite MCP window, and run `aseprite-mcp stop` so the daemon picks it up."
+      isRemote
+        ? "New remote token saved. Update remote MCP clients and run `aseprite-mcp stop` so the daemon picks it up."
+        : "New token saved. Paste it into the Aseprite MCP window, and run `aseprite-mcp stop` so the daemon picks it up."
     );
   }
 };
